@@ -1,9 +1,8 @@
 """
 EU Partner Intel — FastAPI proxy
-Traduce chiamate GET semplici (da Neurons) in POST verso SEDIA.
-Deploy: Railway, zero config.
 """
 
+import json
 import httpx
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
@@ -12,14 +11,70 @@ app = FastAPI(title="EU Partner Intel Proxy")
 
 SEDIA_URL = "https://api.tech.ec.europa.eu/search-api/prod/rest/search"
 
-ORG_TYPE = {
-    "HES": "University",
-    "REC": "Research Centre",
-    "PRC": "Large Enterprise",
-    "SME": "SME",
-    "PUB": "Public Authority",
-    "OTH": "Other",
+COUNTRY_MAP = {
+    "20000873": "DE", "20000890": "FR", "20000922": "IT", "20000883": "ES",
+    "20000839": "BE", "20000875": "DK", "20000884": "FI", "20000906": "NL",
+    "20000909": "PL", "20000879": "EE", "20000880": "GR", "20000885": "HR",
+    "20000886": "HU", "20000887": "IE", "20000888": "IS", "20000892": "LT",
+    "20000893": "LU", "20000894": "LV", "20000895": "MT", "20000896": "NO",
+    "20000897": "AT", "20000898": "PT", "20000899": "RO", "20000901": "SI",
+    "20000902": "SK", "20000903": "SE", "20000904": "CH", "20000905": "CZ",
+    "20000907": "CY", "20000908": "BG", "20000910": "TR", "20000912": "GB",
+    "20000913": "UA", "20000914": "RS", "20000919": "IL", "20000920": "MA",
 }
+
+ORG_TYPE_MAP = {
+    "31079048": "SME", "31079049": "SME",
+    "31079050": "University/Higher Education",
+    "31079051": "Research Centre",
+    "31079052": "Large Enterprise",
+    "31079053": "Public Authority",
+    "31079054": "Other", "31079055": "NGO",
+    "31079056": "International Org",
+}
+
+HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/plain, */*",
+    "Origin": "https://ec.europa.eu",
+    "Referer": "https://ec.europa.eu/",
+}
+
+
+def extract(meta: dict, key: str) -> str:
+    val = meta.get(key, [])
+    return val[0] if val else ""
+
+
+def normalize_partner(hit: dict, topic_id: str) -> dict:
+    meta = hit.get("metadata", {})
+    pic = extract(meta, "pic")
+    country_id = extract(meta, "country")
+    org_type_id = extract(meta, "organisationType")
+    keywords = meta.get("keywords", [])
+
+    public_projects_raw = extract(meta, "publicProjects")
+    programs = []
+    try:
+        projects = json.loads(public_projects_raw) if public_projects_raw else []
+        programs = list({p.get("program", {}).get("abbreviation", "") for p in projects if isinstance(p, dict)})
+        programs = [p for p in programs if p]
+    except Exception:
+        pass
+
+    return {
+        "legal_name":         extract(meta, "name") or hit.get("summary", ""),
+        "pic_number":         pic,
+        "city":               extract(meta, "city"),
+        "country":            COUNTRY_MAP.get(country_id, country_id),
+        "organization_type":  ORG_TYPE_MAP.get(org_type_id, org_type_id),
+        "keywords":           keywords,
+        "topics_active":      meta.get("topics", []),
+        "projects_count":     extract(meta, "noOfProjects"),
+        "programs":           programs,
+        "open_calls_interest": topic_id,
+        "cordis_url":         f"https://cordis.europa.eu/search/result_en?q=contenttype%3Dproject+AND+relations%2Forganisations%2Fpic%3D{pic}" if pic else "",
+    }
 
 
 @app.get("/")
@@ -33,126 +88,57 @@ async def get_partners(
     page_size: int = Query(50, le=100),
     page_number: int = Query(1),
     country: str = Query("", description="Filtra per paese ISO, es: DE"),
+    only_with_partner_search: bool = Query(True),
 ):
-    """
-    Ritorna tutti gli annunci partner pubblicati su F&T Portal per un topic.
-    Chiama POST SEDIA_PERSON e restituisce JSON normalizzato.
-    """
-
-    # Body JSON — se SEDIA risponde 400 passiamo al fallback protobuf
-    body = {
-        "query": topic_id,
-        "pageSize": page_size,
-        "pageNumber": page_number,
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://ec.europa.eu",
-        "Referer": "https://ec.europa.eu/",
-    }
-
-    params = {
-        "apiKey": "SEDIA_PERSON",
-        "text": "***",
-        "pageSize": page_size,
-        "pageNumber": page_number,
-    }
-
     async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(SEDIA_URL, params=params, json=body, headers=headers)
+        r = await client.post(
+            SEDIA_URL,
+            params={"apiKey": "SEDIA_PERSON", "text": topic_id, "pageSize": page_size, "pageNumber": page_number},
+            json={},
+            headers=HEADERS,
+        )
 
     if r.status_code != 200:
-        return JSONResponse(
-            status_code=r.status_code,
-            content={
-                "error": f"SEDIA returned {r.status_code}",
-                "detail": r.text[:500],
-                "hint": "Il body protobuf potrebbe essere necessario — vedi /debug",
-            },
-        )
+        return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
 
     data = r.json()
-
-    # Normalizza i risultati
-    raw_hits = (
-        data.get("results")
-        or data.get("hits")
-        or data.get("items")
-        or data.get("content")
-        or []
-    )
+    hits = data.get("results") or data.get("hits") or data.get("items") or []
 
     partners = []
-    for hit in raw_hits:
-        meta = hit.get("metadata", hit)
-        org = meta.get("organisation", {}) if isinstance(meta, dict) else {}
-
-        legal_name = (
-            hit.get("organisationName")
-            or hit.get("legalName")
-            or org.get("legalName", "")
-        )
-        pic = str(hit.get("pic") or hit.get("picNumber") or org.get("pic", ""))
-        country_code = hit.get("country") or org.get("country", {}).get("isoCode", "") if isinstance(org.get("country"), dict) else org.get("country", "")
-        org_type_raw = hit.get("organisationType") or org.get("activityType", "")
-        description = hit.get("description") or hit.get("expertiseDescription") or meta.get("description", "")
-        keywords = hit.get("keywords") or hit.get("tags") or []
-        ann_type = hit.get("announcementType") or hit.get("type", "")
-        pub_date = hit.get("publicationDate") or hit.get("creationDate", "")
-        contact_name = hit.get("contactName", "")
-        contact_email = hit.get("contactEmail", "")
-
-        # Salta se filtro paese attivo
-        if country and country_code.upper() != country.upper():
+    for hit in hits:
+        meta = hit.get("metadata", {})
+        topics_active = meta.get("topics", [])
+        if topic_id not in topics_active:
             continue
-
-        partners.append({
-            "legal_name": legal_name,
-            "pic_number": pic,
-            "country": country_code,
-            "organization_type": ORG_TYPE.get(org_type_raw, org_type_raw),
-            "announcement_type": ann_type,          # OFFER o REQUEST
-            "description": description,
-            "keywords": keywords if isinstance(keywords, list) else [keywords],
-            "contact_name": contact_name,
-            "contact_email": contact_email,
-            "publication_date": pub_date,
-            "cordis_url": f"https://cordis.europa.eu/search/result_it?q=contenttype%3Dproject+AND+relations%2Forganisations%2Fpic%3D{pic}" if pic else "",
-            "open_calls_interest": topic_id,
-        })
+        has_ps = extract(meta, "hasPartnerSearch")
+        if only_with_partner_search and has_ps != "true":
+            continue
+        partner = normalize_partner(hit, topic_id)
+        if country and partner["country"].upper() != country.upper():
+            continue
+        partners.append(partner)
 
     return {
-        "topic_id": topic_id,
-        "total_in_sedia": data.get("totalResults") or data.get("total") or len(partners),
-        "returned": len(partners),
-        "page_number": page_number,
-        "partners": partners,
+        "topic_id":    topic_id,
+        "total_sedia": data.get("totalResults") or data.get("total") or 0,
+        "matched":     len(partners),
+        "page":        page_number,
+        "partners":    partners,
     }
 
 
 @app.get("/org")
 async def get_org_track_record(
     pic: str = Query("", description="PIC number a 9 cifre"),
-    name: str = Query("", description="Nome organizzazione (alternativo al PIC)"),
+    name: str = Query("", description="Nome organizzazione"),
 ):
-    """
-    Track record da CORDIS: progetti vinti, budget totale, ruolo coordinator.
-    """
     if not pic and not name:
         return JSONResponse(status_code=400, content={"error": "Fornire pic o name"})
 
-    if pic:
-        q = f"contenttype=project AND relations/organisations/pic={pic}"
-    else:
-        q = f'contenttype=project AND relations/organisations/legalName="{name}"'
+    q = f"contenttype=project AND relations/organisations/pic={pic}" if pic else f'contenttype=project AND relations/organisations/legalName="{name}"'
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.get(
-            "https://cordis.europa.eu/api/search",
-            params={"q": q, "p": 1, "num": 200, "format": "json"},
-        )
+        r = await client.get("https://cordis.europa.eu/api/search", params={"q": q, "p": 1, "num": 200, "format": "json"})
 
     if r.status_code != 200:
         return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
@@ -169,108 +155,53 @@ async def get_org_track_record(
 
     for p in projects:
         proj = p.get("project", p)
-        framework = proj.get("frameworkProgramme", "")
-        if framework:
-            programs.add(framework)
+        if proj.get("frameworkProgramme"):
+            programs.add(proj["frameworkProgramme"])
         try:
             total_budget += float(proj.get("ecMaxContribution", 0))
         except (ValueError, TypeError):
             pass
-
         orgs = proj.get("relations", {}).get("organizations", {}).get("organization", [])
         if isinstance(orgs, dict):
             orgs = [orgs]
         for org in orgs:
-            match = str(org.get("pic", "")) == str(pic) or org.get("legalName", "").lower() == name.lower()
-            if match and org.get("role", "").upper() in ["COORDINATOR", "COORD"]:
+            if str(org.get("pic", "")) == str(pic) and org.get("role", "").upper() in ["COORDINATOR", "COORD"]:
                 coordinator_count += 1
 
     return {
-        "pic": pic,
-        "name": name,
-        "horizon_projects_total": total,
+        "pic": pic, "name": name,
+        "projects_total": total,
         "coordinator_count": coordinator_count,
         "total_ec_budget_meur": round(total_budget / 1_000_000, 2),
         "programs": sorted(programs),
-        "cordis_url": f"https://cordis.europa.eu/search/result_it?q=contenttype%3Dproject+AND+relations%2Forganisations%2Fpic%3D{pic}",
+        "cordis_url": f"https://cordis.europa.eu/search/result_en?q=contenttype%3Dproject+AND+relations%2Forganisations%2Fpic%3D{pic}",
     }
 
 
-@app.get("/count")
-async def get_count(topic_id: str = Query(...)):
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(
-            "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements",
-            params={"topicId": topic_id},
-        )
-    return {"topic_id": topic_id, "raw_response": r.json() if r.status_code == 200 else r.text}
-
-
-@app.get("/debug")
-async def debug_sedia(
-    topic_id: str = Query(..., description="Es: HORIZON-INFRA-2026-01-EOSC-01"),
-):
-    """
-    Mostra la risposta RAW di SEDIA — per capire i nomi reali dei campi.
-    """
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://ec.europa.eu",
-        "Referer": "https://ec.europa.eu/",
-    }
-
-    # Tentativo 1: query diretta con topic_id
-    body_v1 = {
-        "query": topic_id,
-        "pageSize": 2,
-        "pageNumber": 1,
-    }
-
-    # Tentativo 2: filtro esplicito su topicIdentifier
-    body_v2 = {
-        "query": "*",
-        "filters": [
-            {"name": "topicIdentifier", "values": [topic_id]},
-        ],
-        "pageSize": 2,
-        "pageNumber": 1,
-    }
-
-    # Tentativo 3: filtro su ccm2Id (formato numerico — da scoprire)
-    body_v3 = {
-        "query": "*",
-        "filters": [
-            {"name": "type", "values": ["PartnerAnnouncement"]},
-            {"name": "topicId", "values": [topic_id]},
-        ],
-        "pageSize": 2,
-        "pageNumber": 1,
-    }
-
-    results = {}
+@app.get("/debug-raw")
+async def debug_raw(topic_id: str = Query(...), page_size: int = Query(5)):
     async with httpx.AsyncClient(timeout=30.0) as client:
-        for label, body in [("v1_direct_query", body_v1), ("v2_topicIdentifier", body_v2), ("v3_type_filter", body_v3)]:
-            r = await client.post(
-                SEDIA_URL,
-                params={"apiKey": "SEDIA_PERSON", "text": "***", "pageSize": 2, "pageNumber": 1},
-                json=body,
-                headers=headers,
-            )
-            try:
-                raw = r.json()
-            except Exception:
-                raw = r.text[:500]
-
-            # Prendi solo il primo risultato per vedere i campi
-            hits = raw.get("results") or raw.get("hits") or raw.get("items") or raw.get("content") or []
-            first_hit = hits[0] if hits else {}
-
-            results[label] = {
-                "status": r.status_code,
-                "total": raw.get("totalResults") or raw.get("total"),
-                "first_hit_keys": list(first_hit.keys()) if isinstance(first_hit, dict) else str(first_hit)[:200],
-                "first_hit_full": first_hit,
+        r = await client.post(
+            SEDIA_URL,
+            params={"apiKey": "SEDIA_PERSON", "text": topic_id, "pageSize": page_size, "pageNumber": 1},
+            json={}, headers=HEADERS,
+        )
+    data = r.json()
+    hits = data.get("results") or []
+    return {
+        "status": r.status_code,
+        "total": data.get("totalResults") or data.get("total"),
+        "hits": [
+            {
+                "summary":       h.get("summary"),
+                "name":          h.get("metadata", {}).get("name"),
+                "pic":           h.get("metadata", {}).get("pic"),
+                "topics":        h.get("metadata", {}).get("topics"),
+                "hasPartnerSearch": h.get("metadata", {}).get("hasPartnerSearch"),
+                "country":       h.get("metadata", {}).get("country"),
+                "orgType":       h.get("metadata", {}).get("organisationType"),
+                "keywords":      h.get("metadata", {}).get("keywords", [])[:5],
             }
-
-    return results
+            for h in hits
+        ],
+    }
