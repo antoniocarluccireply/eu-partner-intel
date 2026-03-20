@@ -87,55 +87,69 @@ def root():
 @app.get("/partners")
 async def get_partners(
     topic_id: str = Query(..., description="Es: HORIZON-INFRA-2026-01-EOSC-01"),
-    page_size: int = Query(50, le=100),
-    page_number: int = Query(1),
     country: str = Query("", description="Filtra per paese ISO, es: DE"),
 ):
     """
-    Cerca con exact match (virgolette) per trovare solo le org
-    che hanno il topic_id esatto nel loro profilo SEDIA.
+    Recupera TUTTI i partner per il topic_id, paginando automaticamente SEDIA
+    e deduplicando per pic_number. Ritorna solo i partner con topic_id nel campo topics.
     """
-    # Le virgolette forzano exact phrase match in SEDIA
     exact_query = f'"{topic_id}"'
+    seen_pics = set()
+    partners = []
+    page = 1
+    page_size = 50
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(
-            SEDIA_URL,
-            params={
-                "apiKey": "SEDIA_PERSON",
-                "text": exact_query,
-                "pageSize": page_size,
-                "pageNumber": page_number,
-            },
-            json={},
-            headers=HEADERS,
-        )
+        while True:
+            r = await client.post(
+                SEDIA_URL,
+                params={
+                    "apiKey": "SEDIA_PERSON",
+                    "text": exact_query,
+                    "pageSize": page_size,
+                    "pageNumber": page,
+                },
+                json={},
+                headers=HEADERS,
+            )
+            if r.status_code != 200:
+                break
 
-    if r.status_code != 200:
-        return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
+            data = r.json()
+            hits = data.get("results") or data.get("hits") or data.get("items") or []
+            total = data.get("totalResults") or data.get("total") or 0
 
-    data = r.json()
-    hits = data.get("results") or data.get("hits") or data.get("items") or []
-    total = data.get("totalResults") or data.get("total") or 0
+            if not hits:
+                break
 
-    partners = []
-    for hit in hits:
-        meta = hit.get("metadata", {})
-        # Il topic_id è nel campo topics degli annunci partner
-        topics_field = meta.get("topics") or []
-        if topic_id not in topics_field:
-            continue
-        partner = normalize_partner(hit, topic_id)
-        if country and partner["country"].upper() != country.upper():
-            continue
-        partners.append(partner)
+            for hit in hits:
+                meta = hit.get("metadata", {})
+                topics_field = meta.get("topics") or []
+                if topic_id not in topics_field:
+                    continue
+
+                # Deduplica per pic_number
+                pic = (meta.get("pic") or [""])[0]
+                dedup_key = pic if pic else (meta.get("name") or [""])[0]
+                if dedup_key in seen_pics:
+                    continue
+                seen_pics.add(dedup_key)
+
+                partner = normalize_partner(hit, topic_id)
+                if country and partner["country"].upper() != country.upper():
+                    continue
+                partners.append(partner)
+
+            # Smetti di paginare se abbiamo esaurito i risultati
+            if page * page_size >= total or len(hits) < page_size:
+                break
+            page += 1
 
     return {
-        "topic_id":    topic_id,
-        "total_sedia": total,
-        "matched":     len(partners),
-        "page":        page_number,
-        "partners":    partners,
+        "topic_id": topic_id,
+        "total_unique": len(partners),
+        "pages_fetched": page,
+        "partners": partners,
     }
 
 
