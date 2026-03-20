@@ -193,7 +193,7 @@ async def get_org_track_record(
         return {
             "pic": pic,
             "portal_url": f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/org-details/{pic}",
-            "note": "Per ottenere il profilo completo chiama /org?pic={pic}&name=NOME_LEGALE oppure /org?name=NOME_LEGALE",
+            f"note": f"Per ottenere il profilo completo chiama /org?pic={pic}&name=NOME_LEGALE oppure /org?name=NOME_LEGALE",
         }
 
     if not name:
