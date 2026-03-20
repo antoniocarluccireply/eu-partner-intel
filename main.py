@@ -285,36 +285,46 @@ async def get_org_track_record(
 
 
 
+# Status code map per le call SEDIA
+CALL_STATUS_MAP = {
+    "31094501": "open",
+    "31094502": "forthcoming",
+    "31094503": "closed",
+    "31094504": "suspended",
+}
+
 @app.get("/calls")
 async def search_calls(
     keywords: str = Query("", description="Parole chiave, es: cybersecurity digital twin"),
-    programme: str = Query("", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE..."),
-    status: str = Query("all", description="open | forthcoming | all"),
+    programme: str = Query("HORIZON", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE"),
+    status: str = Query("open", description="open | forthcoming | open+forthcoming | all"),
     cluster: str = Query("", description="Cluster Horizon, es: CL3, CL4, CL5"),
     page_size: int = Query(20, le=50),
     page_number: int = Query(1),
 ):
     """
-    Cerca call EU aperte e/o future su SEDIA.
-    Usa apiKey=SEDIA (non SEDIA_PERSON) che indicizza topics/calls.
+    Cerca call EU aperte e/o future dal portale F&T.
+    Usa SEDIA_NONH2020_PROD che indicizza i topic/call del portale.
+    I topic_id sono nel formato HORIZON-CL3-2026-01-INFRA-01.
     """
-    # Costruisci la query full-text
+    # Costruisci query: cerca topic ID nel formato standard
     parts = []
-    if keywords:
-        parts.append(keywords)
-    if programme:
-        parts.append(programme)
     if cluster:
         parts.append(cluster)
+    if programme and programme != "HORIZON":
+        parts.append(programme)
+    elif programme == "HORIZON":
+        parts.append("HORIZON")
+    if keywords:
+        parts.append(keywords)
 
-    # Se nessun filtro, cerca tutte le call Horizon Europe recenti
-    text = " ".join(parts) if parts else "Horizon Europe"
+    text = " ".join(parts) if parts else "HORIZON"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(
             SEDIA_URL,
             params={
-                "apiKey": "SEDIA",
+                "apiKey": "SEDIA_NONH2020_PROD",
                 "text": text,
                 "pageSize": page_size,
                 "pageNumber": page_number,
@@ -330,55 +340,68 @@ async def search_calls(
     hits = data.get("results") or data.get("hits") or []
     total = data.get("totalResults") or data.get("total") or 0
 
+    seen_ids = set()
     calls = []
     for hit in hits:
         meta = hit.get("metadata", {})
 
-        # Filtra solo topics/call (non organizzazioni)
-        record_type = (meta.get("type") or [""])[0] if meta.get("type") else hit.get("contentType", "")
-        # Escludi profili organizzazione (ORGANISATION)
-        if "ORGANISATION" in str(record_type).upper():
-            continue
+        # Il topic_id reale è nel formato HORIZON-CL3-... ed è il reference o identifier
+        topic_id = hit.get("reference", "") or (meta.get("identifier") or [""])[0] if meta.get("identifier") else ""
 
-        # Estrai campi rilevanti
-        identifier  = (meta.get("identifier") or meta.get("topicIdentifier") or [""])[0] if meta.get("identifier") or meta.get("topicIdentifier") else hit.get("reference", "")
+        # Filtra: accetta solo topic_id nel formato standard (contengono "-")
+        # ed escludi UUID e numeri puri
+        if not topic_id or len(topic_id) < 10:
+            continue
+        if topic_id.replace("-","").replace(".","").isdigit():
+            continue  # numerici puri
+        if len(topic_id) == 36 and topic_id.count("-") == 4:
+            continue  # UUID format
+
+        # Deduplicazione
+        if topic_id in seen_ids:
+            continue
+        seen_ids.add(topic_id)
+
+        # Campi
         title       = hit.get("title") or hit.get("summary") or ""
-        deadline    = (meta.get("deadlineDate") or meta.get("deadline") or meta.get("closingDate") or [""])[0] if any(k in meta for k in ["deadlineDate","deadline","closingDate"]) else ""
+        call_status_raw = (meta.get("status") or meta.get("topicStatus") or [""])[0] if any(k in meta for k in ["status","topicStatus"]) else ""
+        call_status = CALL_STATUS_MAP.get(str(call_status_raw), str(call_status_raw))
+        deadline    = (meta.get("deadlineDate") or meta.get("deadline") or [""])[0] if any(k in meta for k in ["deadlineDate","deadline"]) else ""
         opening     = (meta.get("openingDate") or meta.get("startDate") or [""])[0] if any(k in meta for k in ["openingDate","startDate"]) else ""
-        call_status = (meta.get("status") or meta.get("callStatus") or [""])[0] if any(k in meta for k in ["status","callStatus"]) else ""
-        budget      = (meta.get("budget") or meta.get("totalBudget") or [""])[0] if any(k in meta for k in ["budget","totalBudget"]) else ""
-        prog        = (meta.get("programme") or meta.get("frameworkProgramme") or [""])[0] if any(k in meta for k in ["programme","frameworkProgramme"]) else ""
-        call_id     = (meta.get("callIdentifier") or [""])[0] if meta.get("callIdentifier") else ""
+        budget      = (meta.get("budget") or meta.get("budgetOverview") or [""])[0] if any(k in meta for k in ["budget","budgetOverview"]) else ""
+        prog        = (meta.get("frameworkProgramme") or meta.get("programme") or [""])[0] if any(k in meta for k in ["frameworkProgramme","programme"]) else ""
 
-        # Filtra per status se richiesto
-        if status == "open" and call_status and "OPEN" not in str(call_status).upper():
-            continue
-        if status == "forthcoming" and call_status and "FORTH" not in str(call_status).upper():
-            continue
-
-        topic_id = identifier or call_id or hit.get("reference", "")
+        # Filtra per status
+        want = status.lower()
+        if want != "all":
+            if "+" in want:
+                allowed = [s.strip() for s in want.split("+")]
+                if call_status not in allowed:
+                    continue
+            else:
+                if call_status != want:
+                    continue
 
         calls.append({
-            "topic_id":    topic_id,
-            "title":       title[:200] if title else "",
-            "programme":   prog,
-            "status":      call_status,
-            "opening_date": opening,
-            "deadline":    deadline,
-            "budget":      budget,
-            "type":        record_type,
-            "portal_url":  f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}" if topic_id else "",
-            "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}" if topic_id else "",
+            "topic_id":           topic_id,
+            "title":              title[:200] if title else "",
+            "programme":          prog,
+            "status":             call_status,
+            "opening_date":       opening[:10] if opening else "",
+            "deadline":           deadline[:10] if deadline else "",
+            "budget_meur":        budget,
+            "portal_url":         f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}",
+            "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}",
         })
 
     return {
-        "query":        text,
+        "query":         text,
         "status_filter": status,
-        "total_sedia":  total,
-        "returned":     len(calls),
-        "page":         page_number,
-        "calls":        calls,
-        "note":         "Per vedere i partner di una call usa /partners?topic_id=TOPIC_ID",
+        "total_sedia":   total,
+        "returned":      len(calls),
+        "page":          page_number,
+        "calls":         calls,
+        "note":          "Per vedere i partner di una call copia il topic_id e usa /partners?topic_id=...",
     }
 
 
