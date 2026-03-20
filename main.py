@@ -80,6 +80,7 @@ def normalize_partner(hit: dict, topic_id: str) -> dict:
         "city":                 extract(meta, "city"),
         "country":              COUNTRY_MAP.get(country_id, country_id),
         "organization_type":    ORG_TYPE_MAP.get(org_type_id, org_type_id),
+        "_raw_country_id":      country_id,
         "sedia_description":    sedia_description,
         "keywords":             keywords,
         "all_active_calls_count": len(meta.get("topics", [])),
