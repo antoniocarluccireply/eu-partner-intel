@@ -46,6 +46,7 @@ ORG_TYPE_MAP = {
     "31079053": "Public Authority",
     "31079054": "Other", "31079055": "NGO",
     "31079056": "International Org",
+    "31079047": "Non-profit Organisation",
 }
 
 HEADERS = {
@@ -96,7 +97,7 @@ def normalize_partner(hit: dict, topic_id: str) -> dict:
         "projects_count":       extract(meta, "noOfProjects"),
         "programs":             programs,
         "open_calls_interest":  topic_id,
-        "cordis_url":           f"https://cordis.europa.eu/search/result_en?q=contenttype%3Dproject+AND+relations%2Forganisations%2Fpic%3D{pic}" if pic else "",
+        "cordis_url":           f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/org-details/{pic}" if pic else "",
     }
 
 
@@ -221,7 +222,7 @@ async def get_org_track_record(
         "coordinator_count": coordinator_count,
         "total_ec_budget_meur": round(total_budget / 1_000_000, 2),
         "programs": sorted(programs),
-        "cordis_url": f"https://cordis.europa.eu/search/result_en?q=contenttype%3Dproject+AND+relations%2Forganisations%2Fpic%3D{pic}",
+        "cordis_url": f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/org-details/{pic}",
     }
 
 
