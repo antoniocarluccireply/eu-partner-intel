@@ -23,6 +23,10 @@ COUNTRY_MAP = {
     "20000913": "UA", "20000914": "RS", "20000919": "IL", "20000920": "MA",
     "20000825": "AL", "20000832": "AT", "20000871": "CY", "20000878": "HR",
     "20000881": "GR", "20000882": "HU", "20000891": "LV", "20000900": "RO",
+    # Extra IDs found in real data
+    "20000841": "BG", "20000872": "CZ", "20000986": "XK", "20000973": "TR",
+    "20000994": "PT", "20001026": "KS", "20001001": "ME", "20000990": "PT",
+    "20000876": "EE", "20000877": "FI", "20000830": "BA",
 }
 
 ORG_TYPE_MAP = {
@@ -64,18 +68,27 @@ def normalize_partner(hit: dict, topic_id: str) -> dict:
     except Exception:
         pass
 
+    # sedia_description: testo libero dell'annuncio partner (quello visibile nel portale)
+    sedia_description = hit.get("content") or hit.get("summary") or ""
+    # Rimuovi il nome dell'org se è solo il nome ripetuto
+    name_val = extract(meta, "name") or ""
+    if sedia_description.strip() == name_val.strip():
+        sedia_description = ""
+
     return {
-        "legal_name":         extract(meta, "name") or hit.get("summary", ""),
-        "pic_number":         pic,
-        "city":               extract(meta, "city"),
-        "country":            COUNTRY_MAP.get(country_id, country_id),
-        "organization_type":  ORG_TYPE_MAP.get(org_type_id, org_type_id),  # fallback = stringa raw
-        "keywords":           keywords,
-        "topics_active":      meta.get("topics", []),
-        "projects_count":     extract(meta, "noOfProjects"),
-        "programs":           programs,
-        "open_calls_interest": topic_id,
-        "cordis_url":         f"https://cordis.europa.eu/search/result_en?q=contenttype%3Dproject+AND+relations%2Forganisations%2Fpic%3D{pic}" if pic else "",
+        "legal_name":           extract(meta, "name") or hit.get("summary", ""),
+        "pic_number":           pic,
+        "city":                 extract(meta, "city"),
+        "country":              COUNTRY_MAP.get(country_id, country_id),
+        "organization_type":    ORG_TYPE_MAP.get(org_type_id, org_type_id),
+        "sedia_description":    sedia_description,
+        "keywords":             keywords,
+        "all_active_calls_count": len(meta.get("topics", [])),
+        "topics_active":        meta.get("topics", []),
+        "projects_count":       extract(meta, "noOfProjects"),
+        "programs":             programs,
+        "open_calls_interest":  topic_id,
+        "cordis_url":           f"https://cordis.europa.eu/search/result_en?q=contenttype%3Dproject+AND+relations%2Forganisations%2Fpic%3D{pic}" if pic else "",
     }
 
 
