@@ -88,12 +88,23 @@ async def get_partners(
     page_size: int = Query(50, le=100),
     page_number: int = Query(1),
     country: str = Query("", description="Filtra per paese ISO, es: DE"),
-    only_with_partner_search: bool = Query(True),
 ):
+    """
+    Cerca con exact match (virgolette) per trovare solo le org
+    che hanno il topic_id esatto nel loro profilo SEDIA.
+    """
+    # Le virgolette forzano exact phrase match in SEDIA
+    exact_query = f'"{topic_id}"'
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(
             SEDIA_URL,
-            params={"apiKey": "SEDIA_PERSON", "text": topic_id, "pageSize": page_size, "pageNumber": page_number},
+            params={
+                "apiKey": "SEDIA_PERSON",
+                "text": exact_query,
+                "pageSize": page_size,
+                "pageNumber": page_number,
+            },
             json={},
             headers=HEADERS,
         )
@@ -103,14 +114,10 @@ async def get_partners(
 
     data = r.json()
     hits = data.get("results") or data.get("hits") or data.get("items") or []
+    total = data.get("totalResults") or data.get("total") or 0
 
     partners = []
     for hit in hits:
-        meta = hit.get("metadata", {})
-        # keywords contiene i topic ID per cui l'org ha annunci partner attivi
-        keywords_meta = meta.get("keywords", [])
-        if topic_id not in keywords_meta:
-            continue
         partner = normalize_partner(hit, topic_id)
         if country and partner["country"].upper() != country.upper():
             continue
@@ -118,7 +125,7 @@ async def get_partners(
 
     return {
         "topic_id":    topic_id,
-        "total_sedia": data.get("totalResults") or data.get("total") or 0,
+        "total_sedia": total,
         "matched":     len(partners),
         "page":        page_number,
         "partners":    partners,
@@ -178,10 +185,11 @@ async def get_org_track_record(
 
 @app.get("/debug-raw")
 async def debug_raw(topic_id: str = Query(...), page_size: int = Query(5)):
+    exact_query = f'"{topic_id}"'
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(
             SEDIA_URL,
-            params={"apiKey": "SEDIA_PERSON", "text": topic_id, "pageSize": page_size, "pageNumber": 1},
+            params={"apiKey": "SEDIA_PERSON", "text": exact_query, "pageSize": page_size, "pageNumber": 1},
             json={}, headers=HEADERS,
         )
     data = r.json()
