@@ -68,12 +68,11 @@ def normalize_partner(hit: dict, topic_id: str) -> dict:
     except Exception:
         pass
 
-    # sedia_description: testo libero dell'annuncio partner (quello visibile nel portale)
-    sedia_description = hit.get("content") or hit.get("summary") or ""
-    # Rimuovi il nome dell'org se è solo il nome ripetuto
-    name_val = extract(meta, "name") or ""
-    if sedia_description.strip() == name_val.strip():
-        sedia_description = ""
+    # sedia_description: keywords autodichiarati del profilo SEDIA dell'org
+    # NOTA: la descrizione testuale dell'annuncio (quella visibile nel portale)
+    # è disponibile via FT-Announcements endpoint separato, non in SEDIA_PERSON
+    raw_keywords = meta.get("keywords") or []
+    sedia_description = ", ".join(raw_keywords[:20]) if raw_keywords else ""
 
     return {
         "legal_name":           extract(meta, "name") or hit.get("summary", ""),
