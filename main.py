@@ -436,38 +436,40 @@ async def get_announcements_with_descriptions(
 
         # Step 2: chiama FT-Announcements con ccm2Id
         ft_data = None
+        all_attempts = []
         if ccm2id:
             attempts = [
-                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"ccm2Id": ccm2id}),
-                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"topicId": ccm2id}),
-                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"id": ccm2id}),
-                # Try the topic string ID too
-                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"ccm2Id": topic_id}),
-                # Try portal API
-                ("GET",  f"https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements/{ccm2id}", {}),
-                # Try with apiKey
-                ("GET",  "https://api.tech.ec.europa.eu/search-api/prod/rest/search", {"apiKey": "SEDIA", "text": str(ccm2id), "pageSize": 5, "pageNumber": 1}),
+                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"ccm2Id": ccm2id}, {}),
+                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"topicId": ccm2id}, {}),
+                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"id": ccm2id}, {}),
+                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"ccm2Id": topic_id}, {}),
+                ("GET",  f"https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements/{ccm2id}", {}, {}),
+                # Try POST with body (SPA uses POST for many SEDIA endpoints)
+                ("POST", "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {}, {"ccm2Id": ccm2id}),
+                ("POST", "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {}, {"topicId": ccm2id}),
+                # Try with apiKey param
+                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"apiKey": "SEDIA", "ccm2Id": ccm2id}, {}),
             ]
-            for method, url, params in attempts:
+            for method, url, params, body in attempts:
+                attempt_result = {"method": method, "url": url, "params": params}
                 try:
-                    r_ft = await client.request(method, url, params=params, headers=headers)
-                    ft_data = {
-                        "_attempt_url": url,
-                        "_attempt_params": params,
-                        "_status": r_ft.status_code,
-                        "_response_preview": r_ft.text[:300],
-                    }
+                    if method == "POST":
+                        r_ft = await client.post(url, params=params, json=body, headers=headers)
+                    else:
+                        r_ft = await client.get(url, params=params, headers=headers)
+                    attempt_result["status"] = r_ft.status_code
+                    attempt_result["response"] = r_ft.text[:400]
                     if r_ft.status_code == 200:
                         try:
                             ft_data = r_ft.json()
-                            ft_data["_source_url"] = url
-                            ft_data["_source_params"] = params
+                            ft_data["_winning_attempt"] = attempt_result
+                            all_attempts.append(attempt_result)
                             break
                         except Exception:
-                            ft_data["_raw"] = r_ft.text[:500]
-                            break
+                            attempt_result["parse_error"] = "not JSON"
                 except Exception as e:
-                    ft_data = {"_error": str(e), "_url": url}
+                    attempt_result["exception"] = str(e)[:200]
+                all_attempts.append(attempt_result)
 
         # Step 3: chiama SEDIA_PERSON per la lista partner (come /partners)
         exact_query = f'"{topic_id}"'
@@ -530,7 +532,8 @@ async def get_announcements_with_descriptions(
         "ft_raw":        ft_data,
         "total_partners": len(partners),
         "partners":      partners,
-        "note": "announcement_description è vuoto: FT-Announcements usa protobuf, le descrizioni visibili nel portale non sono accessibili via JSON pubblico",
+        "ft_attempts": all_attempts,
+        "note": "Vedere ft_attempts per capire quale endpoint funziona",
     }
 
 
