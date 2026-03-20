@@ -285,123 +285,76 @@ async def get_org_track_record(
 
 
 
-# Status code map per le call SEDIA
-CALL_STATUS_MAP = {
-    "31094501": "open",
-    "31094502": "forthcoming",
-    "31094503": "closed",
-    "31094504": "suspended",
-}
 
 @app.get("/calls")
 async def search_calls(
-    keywords: str = Query("", description="Parole chiave, es: cybersecurity digital twin"),
-    programme: str = Query("HORIZON", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE"),
-    status: str = Query("open", description="open | forthcoming | open+forthcoming | all"),
-    cluster: str = Query("", description="Cluster Horizon, es: CL3, CL4, CL5"),
-    page_size: int = Query(20, le=50),
+    keywords: str = Query("", description="Parole chiave nel topic_id, es: INFRA, DATA, CYBER, TWIN"),
+    programme: str = Query("HORIZON", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE, ERASMUS"),
+    cluster: str = Query("", description="Cluster Horizon, es: CL3, CL4, CL5, CL6, INFRA, HLTH"),
+    page_size: int = Query(20, le=100),
     page_number: int = Query(1),
 ):
     """
-    Cerca call EU aperte e/o future dal portale F&T.
-    Usa SEDIA_NONH2020_PROD che indicizza i topic/call del portale.
-    I topic_id sono nel formato HORIZON-CL3-2026-01-INFRA-01.
+    Cerca call EU dalla topic-list pubblica della CE (no auth richiesta).
+    Filtra per programme, cluster e keywords nel topic_id.
     """
-    # Costruisci query: cerca topic ID nel formato standard
-    parts = []
-    if cluster:
-        parts.append(cluster)
-    if programme and programme != "HORIZON":
-        parts.append(programme)
-    elif programme == "HORIZON":
-        parts.append("HORIZON")
-    if keywords:
-        parts.append(keywords)
+    import re as _re
 
-    text = " ".join(parts) if parts else "HORIZON"
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(
-            SEDIA_URL,
-            params={
-                "apiKey": "SEDIA_NONH2020_PROD",
-                "text": text,
-                "pageSize": page_size,
-                "pageNumber": page_number,
-            },
-            json={},
-            headers=HEADERS,
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.get(
+            "https://ec.europa.eu/info/funding-tenders/opportunities/data/topic-list.html",
+            headers={"Accept": "text/html,application/xhtml+xml"},
         )
 
     if r.status_code != 200:
-        return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
+        return JSONResponse(status_code=500, content={"error": f"topic-list non raggiungibile: {r.status_code}"})
 
-    data = r.json()
-    hits = data.get("results") or data.get("hits") or []
-    total = data.get("totalResults") or data.get("total") or 0
+    # Estrai tutti i topic_id dalla pagina
+    raw_ids = _re.findall('topic-details/([A-Z0-9][A-Z0-9._-]+)', r.text, _re.IGNORECASE)
+    seen = set()
+    all_ids = []
+    for tid in raw_ids:
+        tid_up = tid.upper()
+        if tid_up not in seen:
+            seen.add(tid_up)
+            all_ids.append(tid_up)
 
-    seen_ids = set()
-    calls = []
-    for hit in hits:
-        meta = hit.get("metadata", {})
+    # Filtra
+    prog_up    = programme.upper().strip() if programme else ""
+    cluster_up = cluster.upper().strip() if cluster else ""
+    kw_up      = keywords.upper().strip() if keywords else ""
 
-        # Il topic_id reale è nel formato HORIZON-CL3-... ed è il reference o identifier
-        topic_id = hit.get("reference", "") or (meta.get("identifier") or [""])[0] if meta.get("identifier") else ""
-
-        # Filtra: accetta solo topic_id nel formato standard (contengono "-")
-        # ed escludi UUID e numeri puri
-        if not topic_id or len(topic_id) < 10:
+    filtered = []
+    for tid in all_ids:
+        if prog_up and prog_up not in tid:
             continue
-        if topic_id.replace("-","").replace(".","").isdigit():
-            continue  # numerici puri
-        if len(topic_id) == 36 and topic_id.count("-") == 4:
-            continue  # UUID format
-
-        # Deduplicazione
-        if topic_id in seen_ids:
+        if cluster_up and cluster_up not in tid:
             continue
-        seen_ids.add(topic_id)
+        if kw_up and kw_up not in tid:
+            continue
+        filtered.append(tid)
 
-        # Campi
-        title       = hit.get("title") or hit.get("summary") or ""
-        call_status_raw = (meta.get("status") or meta.get("topicStatus") or [""])[0] if any(k in meta for k in ["status","topicStatus"]) else ""
-        call_status = CALL_STATUS_MAP.get(str(call_status_raw), str(call_status_raw))
-        deadline    = (meta.get("deadlineDate") or meta.get("deadline") or [""])[0] if any(k in meta for k in ["deadlineDate","deadline"]) else ""
-        opening     = (meta.get("openingDate") or meta.get("startDate") or [""])[0] if any(k in meta for k in ["openingDate","startDate"]) else ""
-        budget      = (meta.get("budget") or meta.get("budgetOverview") or [""])[0] if any(k in meta for k in ["budget","budgetOverview"]) else ""
-        prog        = (meta.get("frameworkProgramme") or meta.get("programme") or [""])[0] if any(k in meta for k in ["frameworkProgramme","programme"]) else ""
+    total = len(filtered)
+    start_idx = (page_number - 1) * page_size
+    page_ids = filtered[start_idx:start_idx + page_size]
 
-        # Filtra per status
-        want = status.lower()
-        if want != "all":
-            if "+" in want:
-                allowed = [s.strip() for s in want.split("+")]
-                if call_status not in allowed:
-                    continue
-            else:
-                if call_status != want:
-                    continue
-
-        calls.append({
-            "topic_id":           topic_id,
-            "title":              title[:200] if title else "",
-            "programme":          prog,
-            "status":             call_status,
-            "opening_date":       opening[:10] if opening else "",
-            "deadline":           deadline[:10] if deadline else "",
-            "budget_meur":        budget,
-            "portal_url":         f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}",
-            "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}",
-        })
+    calls = [
+        {
+            "topic_id": tid,
+            "portal_url": f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{tid}",
+            "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={tid}",
+        }
+        for tid in page_ids
+    ]
 
     return {
-        "query":         text,
-        "status_filter": status,
-        "total_sedia":   total,
+        "filters":       {"programme": programme, "cluster": cluster, "keywords": keywords},
+        "total_matched": total,
         "returned":      len(calls),
         "page":          page_number,
+        "page_size":     page_size,
         "calls":         calls,
-        "note":          "Per vedere i partner di una call copia il topic_id e usa /partners?topic_id=...",
+        "note":          "Usa partner_search_url per vedere chi cerca partner per quella call.",
     }
 
 
