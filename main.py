@@ -198,12 +198,79 @@ async def get_org_track_record(
 
 @app.get("/count")
 async def get_count(topic_id: str = Query(...)):
-    """
-    Contatore rapido annunci da FT-Announcements (lightweight).
-    """
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.get(
             "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements",
             params={"topicId": topic_id},
         )
     return {"topic_id": topic_id, "raw_response": r.json() if r.status_code == 200 else r.text}
+
+
+@app.get("/debug")
+async def debug_sedia(
+    topic_id: str = Query(..., description="Es: HORIZON-INFRA-2026-01-EOSC-01"),
+):
+    """
+    Mostra la risposta RAW di SEDIA — per capire i nomi reali dei campi.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://ec.europa.eu",
+        "Referer": "https://ec.europa.eu/",
+    }
+
+    # Tentativo 1: query diretta con topic_id
+    body_v1 = {
+        "query": topic_id,
+        "pageSize": 2,
+        "pageNumber": 1,
+    }
+
+    # Tentativo 2: filtro esplicito su topicIdentifier
+    body_v2 = {
+        "query": "*",
+        "filters": [
+            {"name": "topicIdentifier", "values": [topic_id]},
+        ],
+        "pageSize": 2,
+        "pageNumber": 1,
+    }
+
+    # Tentativo 3: filtro su ccm2Id (formato numerico — da scoprire)
+    body_v3 = {
+        "query": "*",
+        "filters": [
+            {"name": "type", "values": ["PartnerAnnouncement"]},
+            {"name": "topicId", "values": [topic_id]},
+        ],
+        "pageSize": 2,
+        "pageNumber": 1,
+    }
+
+    results = {}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for label, body in [("v1_direct_query", body_v1), ("v2_topicIdentifier", body_v2), ("v3_type_filter", body_v3)]:
+            r = await client.post(
+                SEDIA_URL,
+                params={"apiKey": "SEDIA_PERSON", "text": "***", "pageSize": 2, "pageNumber": 1},
+                json=body,
+                headers=headers,
+            )
+            try:
+                raw = r.json()
+            except Exception:
+                raw = r.text[:500]
+
+            # Prendi solo il primo risultato per vedere i campi
+            hits = raw.get("results") or raw.get("hits") or raw.get("items") or raw.get("content") or []
+            first_hit = hits[0] if hits else {}
+
+            results[label] = {
+                "status": r.status_code,
+                "total": raw.get("totalResults") or raw.get("total"),
+                "first_hit_keys": list(first_hit.keys()) if isinstance(first_hit, dict) else str(first_hit)[:200],
+                "first_hit_full": first_hit,
+            }
+
+    return results
