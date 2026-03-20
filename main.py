@@ -180,41 +180,63 @@ async def get_org_track_record(
     pic: str = Query("", description="PIC number a 9 cifre"),
     name: str = Query("", description="Nome organizzazione"),
 ):
-    """Track record da SEDIA_PERSON — CORDIS /api/search non è più pubblico."""
+    """Track record da SEDIA_PERSON."""
     if not pic and not name:
         return JSONResponse(status_code=400, content={"error": "Fornire pic o name"})
 
-    search_text = pic if pic else f'"{name}"'
+    import json as _json
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.post(
-            SEDIA_URL,
-            params={"apiKey": "SEDIA_PERSON", "text": search_text, "pageSize": 5, "pageNumber": 1},
-            json={},
-            headers=HEADERS,
-        )
+    async def search_sedia(text: str):
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                SEDIA_URL,
+                params={"apiKey": "SEDIA_PERSON", "text": text, "pageSize": 10, "pageNumber": 1},
+                json={},
+                headers=HEADERS,
+            )
+        if r.status_code != 200:
+            return []
+        return r.json().get("results") or r.json().get("hits") or []
 
-    if r.status_code != 200:
-        return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
+    def find_match(hits, pic, name):
+        for hit in hits:
+            meta = hit.get("metadata", {})
+            hit_pic = (meta.get("pic") or [""])[0]
+            hit_name = (meta.get("name") or [""])[0].lower()
+            if pic and hit_pic == pic:
+                return hit
+            if name and name.lower() in hit_name:
+                return hit
+        return None
 
-    data = r.json()
-    hits = data.get("results") or data.get("hits") or []
+    # Try 1: search by PIC with quotes
+    hits = await search_sedia(f'"{pic}"' if pic else f'"{name}"')
+    match = find_match(hits, pic, name)
 
-    match = None
-    for hit in hits:
-        meta = hit.get("metadata", {})
-        hit_pic = (meta.get("pic") or [""])[0]
-        hit_name = (meta.get("name") or [""])[0]
-        if (pic and hit_pic == pic) or (name and name.lower() in hit_name.lower()):
-            match = hit
-            break
+    # Try 2: search by PIC without quotes
+    if not match and pic:
+        hits = await search_sedia(pic)
+        match = find_match(hits, pic, name)
+
+    # Try 3: search by name
+    if not match and name:
+        hits = await search_sedia(name)
+        match = find_match(hits, pic, name)
+
+    # Try 4: fallback to first result
     if not match and hits:
         match = hits[0]
-    if not match:
-        return JSONResponse(status_code=404, content={"error": f"Non trovata: pic={pic} name={name}"})
 
-    import json as _json
+    if not match:
+        return JSONResponse(status_code=404, content={
+            "error": f"Organizzazione non trovata",
+            "searched_pic": pic,
+            "searched_name": name,
+            "hint": "Prova con il nome legale completo usando ?name=NOME"
+        })
+
     meta = match.get("metadata", {})
+
     public_projects_raw = (meta.get("publicProjects") or [""])[0]
     projects = []
     try:
