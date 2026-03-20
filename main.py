@@ -283,6 +283,143 @@ async def get_org_track_record(
     }
 
 
+
+@app.get("/announcements")
+async def get_announcements_with_descriptions(
+    topic_id: str = Query(..., description="Es: HORIZON-CL4-2026-04-DATA-06"),
+):
+    """
+    Tenta di recuperare le descrizioni reali degli annunci partner
+    (quelle visibili nel portale) tramite endpoint FT-Announcements.
+    
+    Step 1: cerca il ccm2Id numerico del topic su SEDIA
+    Step 2: chiama FT-Announcements con ccm2Id
+    Step 3: se fallisce, ritorna i dati SEDIA_PERSON con nota
+    """
+    import json as _json
+
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://ec.europa.eu",
+        "Referer": "https://ec.europa.eu/",
+    }
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+
+        # Step 1: trova ccm2Id cercando il topic su SEDIA (apiKey=SEDIA)
+        ccm2id = None
+        try:
+            r_topic = await client.post(
+                SEDIA_URL,
+                params={"apiKey": "SEDIA", "text": f'"{topic_id}"', "pageSize": 5, "pageNumber": 1},
+                json={},
+                headers=headers,
+            )
+            topic_hits = r_topic.json().get("results") or []
+            for hit in topic_hits:
+                meta = hit.get("metadata", {})
+                # Cerca il ccm2Id nei metadati
+                for key in ["ccm2Id", "id", "topicId", "identifier"]:
+                    val = meta.get(key, [])
+                    if val:
+                        candidate = val[0] if isinstance(val, list) else val
+                        if str(candidate).isdigit():
+                            ccm2id = candidate
+                            break
+                # Alternativa: il reference del hit potrebbe essere il ccm2Id
+                ref = hit.get("reference", "")
+                if ref and str(ref).isdigit():
+                    ccm2id = ref
+                    break
+                if ccm2id:
+                    break
+        except Exception as e:
+            pass
+
+        # Step 2: chiama FT-Announcements con ccm2Id
+        ft_data = None
+        if ccm2id:
+            for param_key in ["ccm2Id", "topicId", "id"]:
+                try:
+                    r_ft = await client.get(
+                        "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements",
+                        params={param_key: ccm2id},
+                        headers=headers,
+                    )
+                    if r_ft.status_code == 200:
+                        try:
+                            ft_data = r_ft.json()
+                            break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        # Step 3: chiama SEDIA_PERSON per la lista partner (come /partners)
+        exact_query = f'"{topic_id}"'
+        seen_pics = set()
+        partners = []
+        page = 1
+
+        while True:
+            r = await client.post(
+                SEDIA_URL,
+                params={"apiKey": "SEDIA_PERSON", "text": exact_query, "pageSize": 50, "pageNumber": page},
+                json={},
+                headers=headers,
+            )
+            if r.status_code != 200:
+                break
+
+            data = r.json()
+            hits = data.get("results") or []
+            total = data.get("totalResults") or 0
+
+            if not hits:
+                break
+
+            for hit in hits:
+                meta = hit.get("metadata", {})
+                topics_field = meta.get("topics") or []
+                if topic_id not in topics_field:
+                    continue
+                pic = (meta.get("pic") or [""])[0]
+                dedup_key = pic if pic else (meta.get("name") or [""])[0]
+                if dedup_key in seen_pics:
+                    continue
+                seen_pics.add(dedup_key)
+
+                country_id = (meta.get("country") or [""])[0]
+                org_type_raw = (meta.get("organisationType") or [""])[0]
+                keywords = meta.get("keywords", [])
+
+                partners.append({
+                    "legal_name":        (meta.get("name") or [""])[0] or hit.get("summary", ""),
+                    "pic_number":        pic,
+                    "country":           COUNTRY_MAP.get(country_id, country_id),
+                    "organization_type": ORG_TYPE_MAP.get(org_type_raw, org_type_raw),
+                    "sedia_keywords":    keywords[:10],
+                    "all_active_calls":  len(meta.get("topics", [])),
+                    "projects_count":    (meta.get("noOfProjects") or [""])[0],
+                    "portal_url":        f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/org-details/{pic}" if pic else "",
+                    # Placeholder per description da FT-Announcements
+                    "announcement_description": "",
+                })
+
+            if page * 50 >= total or len(hits) < 50:
+                break
+            page += 1
+
+    return {
+        "topic_id":      topic_id,
+        "ccm2id_found":  ccm2id,
+        "ft_raw":        ft_data,
+        "total_partners": len(partners),
+        "partners":      partners,
+        "note": "announcement_description è vuoto: FT-Announcements usa protobuf, le descrizioni visibili nel portale non sono accessibili via JSON pubblico",
+    }
+
+
 @app.get("/debug-raw")
 async def debug_raw(topic_id: str = Query(...), page_size: int = Query(5)):
     exact_query = f'"{topic_id}"'
