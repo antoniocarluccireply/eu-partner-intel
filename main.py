@@ -180,49 +180,77 @@ async def get_org_track_record(
     pic: str = Query("", description="PIC number a 9 cifre"),
     name: str = Query("", description="Nome organizzazione"),
 ):
+    """Track record da SEDIA_PERSON — CORDIS /api/search non è più pubblico."""
     if not pic and not name:
         return JSONResponse(status_code=400, content={"error": "Fornire pic o name"})
 
-    q = f"contenttype=project AND relations/organisations/pic={pic}" if pic else f'contenttype=project AND relations/organisations/legalName="{name}"'
+    search_text = pic if pic else f'"{name}"'
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.get("https://cordis.europa.eu/api/search", params={"q": q, "p": 1, "num": 200, "format": "json"})
+        r = await client.post(
+            SEDIA_URL,
+            params={"apiKey": "SEDIA_PERSON", "text": search_text, "pageSize": 5, "pageNumber": 1},
+            json={},
+            headers=HEADERS,
+        )
 
     if r.status_code != 200:
         return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
 
     data = r.json()
-    projects = data.get("results", {}).get("result", [])
-    if isinstance(projects, dict):
-        projects = [projects]
+    hits = data.get("results") or data.get("hits") or []
 
-    total = data.get("results", {}).get("totalCount", len(projects))
-    coordinator_count = 0
-    total_budget = 0.0
+    match = None
+    for hit in hits:
+        meta = hit.get("metadata", {})
+        hit_pic = (meta.get("pic") or [""])[0]
+        hit_name = (meta.get("name") or [""])[0]
+        if (pic and hit_pic == pic) or (name and name.lower() in hit_name.lower()):
+            match = hit
+            break
+    if not match and hits:
+        match = hits[0]
+    if not match:
+        return JSONResponse(status_code=404, content={"error": f"Non trovata: pic={pic} name={name}"})
+
+    import json as _json
+    meta = match.get("metadata", {})
+    public_projects_raw = (meta.get("publicProjects") or [""])[0]
+    projects = []
+    try:
+        projects = _json.loads(public_projects_raw) if public_projects_raw else []
+    except Exception:
+        pass
+
     programs = set()
-
     for p in projects:
-        proj = p.get("project", p)
-        if proj.get("frameworkProgramme"):
-            programs.add(proj["frameworkProgramme"])
-        try:
-            total_budget += float(proj.get("ecMaxContribution", 0))
-        except (ValueError, TypeError):
-            pass
-        orgs = proj.get("relations", {}).get("organizations", {}).get("organization", [])
-        if isinstance(orgs, dict):
-            orgs = [orgs]
-        for org in orgs:
-            if str(org.get("pic", "")) == str(pic) and org.get("role", "").upper() in ["COORDINATOR", "COORD"]:
-                coordinator_count += 1
+        prog = p.get("program", {}).get("abbreviation", "")
+        if prog:
+            programs.add(prog)
+
+    total_projects = int((meta.get("noOfProjects") or ["0"])[0] or 0)
+    country_id = (meta.get("country") or [""])[0]
+    pic_found = (meta.get("pic") or [""])[0]
 
     return {
-        "pic": pic, "name": name,
-        "projects_total": total,
-        "coordinator_count": coordinator_count,
-        "total_ec_budget_meur": round(total_budget / 1_000_000, 2),
-        "programs": sorted(programs),
-        "cordis_url": f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/org-details/{pic}",
+        "pic":               pic_found,
+        "legal_name":        (meta.get("name") or [""])[0],
+        "country":           COUNTRY_MAP.get(country_id, country_id),
+        "organization_type": ORG_TYPE_MAP.get((meta.get("organisationType") or [""])[0], ""),
+        "projects_total":    total_projects,
+        "programs":          sorted(programs),
+        "recent_projects": [
+            {
+                "acronym": p.get("acronym", ""),
+                "title":   p.get("title", ""),
+                "program": p.get("program", {}).get("abbreviation", ""),
+                "call":    p.get("call", {}).get("abbreviation", ""),
+                "status":  p.get("phase", ""),
+            }
+            for p in projects[:5]
+        ],
+        "portal_url":     f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/org-details/{pic_found}",
+        "sedia_keywords": meta.get("keywords", [])[:10],
     }
 
 
