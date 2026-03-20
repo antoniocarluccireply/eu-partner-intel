@@ -339,21 +339,37 @@ async def get_announcements_with_descriptions(
         # Step 2: chiama FT-Announcements con ccm2Id
         ft_data = None
         if ccm2id:
-            for param_key in ["ccm2Id", "topicId", "id"]:
+            attempts = [
+                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"ccm2Id": ccm2id}),
+                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"topicId": ccm2id}),
+                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"id": ccm2id}),
+                # Try the topic string ID too
+                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"ccm2Id": topic_id}),
+                # Try portal API
+                ("GET",  f"https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements/{ccm2id}", {}),
+                # Try with apiKey
+                ("GET",  "https://api.tech.ec.europa.eu/search-api/prod/rest/search", {"apiKey": "SEDIA", "text": str(ccm2id), "pageSize": 5, "pageNumber": 1}),
+            ]
+            for method, url, params in attempts:
                 try:
-                    r_ft = await client.get(
-                        "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements",
-                        params={param_key: ccm2id},
-                        headers=headers,
-                    )
+                    r_ft = await client.request(method, url, params=params, headers=headers)
+                    ft_data = {
+                        "_attempt_url": url,
+                        "_attempt_params": params,
+                        "_status": r_ft.status_code,
+                        "_response_preview": r_ft.text[:300],
+                    }
                     if r_ft.status_code == 200:
                         try:
                             ft_data = r_ft.json()
+                            ft_data["_source_url"] = url
+                            ft_data["_source_params"] = params
                             break
                         except Exception:
-                            pass
-                except Exception:
-                    pass
+                            ft_data["_raw"] = r_ft.text[:500]
+                            break
+                except Exception as e:
+                    ft_data = {"_error": str(e), "_url": url}
 
         # Step 3: chiama SEDIA_PERSON per la lista partner (come /partners)
         exact_query = f'"{topic_id}"'
