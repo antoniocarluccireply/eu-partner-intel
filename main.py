@@ -284,6 +284,104 @@ async def get_org_track_record(
 
 
 
+
+@app.get("/calls")
+async def search_calls(
+    keywords: str = Query("", description="Parole chiave, es: cybersecurity digital twin"),
+    programme: str = Query("", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE..."),
+    status: str = Query("all", description="open | forthcoming | all"),
+    cluster: str = Query("", description="Cluster Horizon, es: CL3, CL4, CL5"),
+    page_size: int = Query(20, le=50),
+    page_number: int = Query(1),
+):
+    """
+    Cerca call EU aperte e/o future su SEDIA.
+    Usa apiKey=SEDIA (non SEDIA_PERSON) che indicizza topics/calls.
+    """
+    # Costruisci la query full-text
+    parts = []
+    if keywords:
+        parts.append(keywords)
+    if programme:
+        parts.append(programme)
+    if cluster:
+        parts.append(cluster)
+
+    # Se nessun filtro, cerca tutte le call Horizon Europe recenti
+    text = " ".join(parts) if parts else "Horizon Europe"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            SEDIA_URL,
+            params={
+                "apiKey": "SEDIA",
+                "text": text,
+                "pageSize": page_size,
+                "pageNumber": page_number,
+            },
+            json={},
+            headers=HEADERS,
+        )
+
+    if r.status_code != 200:
+        return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
+
+    data = r.json()
+    hits = data.get("results") or data.get("hits") or []
+    total = data.get("totalResults") or data.get("total") or 0
+
+    calls = []
+    for hit in hits:
+        meta = hit.get("metadata", {})
+
+        # Filtra solo topics/call (non organizzazioni)
+        record_type = (meta.get("type") or [""])[0] if meta.get("type") else hit.get("contentType", "")
+        # Escludi profili organizzazione (ORGANISATION)
+        if "ORGANISATION" in str(record_type).upper():
+            continue
+
+        # Estrai campi rilevanti
+        identifier  = (meta.get("identifier") or meta.get("topicIdentifier") or [""])[0] if meta.get("identifier") or meta.get("topicIdentifier") else hit.get("reference", "")
+        title       = hit.get("title") or hit.get("summary") or ""
+        deadline    = (meta.get("deadlineDate") or meta.get("deadline") or meta.get("closingDate") or [""])[0] if any(k in meta for k in ["deadlineDate","deadline","closingDate"]) else ""
+        opening     = (meta.get("openingDate") or meta.get("startDate") or [""])[0] if any(k in meta for k in ["openingDate","startDate"]) else ""
+        call_status = (meta.get("status") or meta.get("callStatus") or [""])[0] if any(k in meta for k in ["status","callStatus"]) else ""
+        budget      = (meta.get("budget") or meta.get("totalBudget") or [""])[0] if any(k in meta for k in ["budget","totalBudget"]) else ""
+        prog        = (meta.get("programme") or meta.get("frameworkProgramme") or [""])[0] if any(k in meta for k in ["programme","frameworkProgramme"]) else ""
+        call_id     = (meta.get("callIdentifier") or [""])[0] if meta.get("callIdentifier") else ""
+
+        # Filtra per status se richiesto
+        if status == "open" and call_status and "OPEN" not in str(call_status).upper():
+            continue
+        if status == "forthcoming" and call_status and "FORTH" not in str(call_status).upper():
+            continue
+
+        topic_id = identifier or call_id or hit.get("reference", "")
+
+        calls.append({
+            "topic_id":    topic_id,
+            "title":       title[:200] if title else "",
+            "programme":   prog,
+            "status":      call_status,
+            "opening_date": opening,
+            "deadline":    deadline,
+            "budget":      budget,
+            "type":        record_type,
+            "portal_url":  f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}" if topic_id else "",
+            "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}" if topic_id else "",
+        })
+
+    return {
+        "query":        text,
+        "status_filter": status,
+        "total_sedia":  total,
+        "returned":     len(calls),
+        "page":         page_number,
+        "calls":        calls,
+        "note":         "Per vedere i partner di una call usa /partners?topic_id=TOPIC_ID",
+    }
+
+
 @app.get("/announcements")
 async def get_announcements_with_descriptions(
     topic_id: str = Query(..., description="Es: HORIZON-CL4-2026-04-DATA-06"),
