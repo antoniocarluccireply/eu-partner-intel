@@ -12,21 +12,30 @@ app = FastAPI(title="EU Partner Intel Proxy")
 SEDIA_URL = "https://api.tech.ec.europa.eu/search-api/prod/rest/search"
 
 COUNTRY_MAP = {
-    "20000873": "DE", "20000890": "FR", "20000922": "IT", "20000883": "ES",
-    "20000839": "BE", "20000875": "DK", "20000884": "FI", "20000906": "NL",
-    "20000909": "PL", "20000879": "EE", "20000880": "GR", "20000885": "HR",
-    "20000886": "HU", "20000887": "IE", "20000888": "IS", "20000892": "LT",
-    "20000893": "LU", "20000894": "LV", "20000895": "MT", "20000896": "NO",
-    "20000897": "AT", "20000898": "PT", "20000899": "RO", "20000901": "SI",
-    "20000902": "SK", "20000903": "SE", "20000904": "CH", "20000905": "CZ",
-    "20000907": "CY", "20000908": "BG", "20000910": "TR", "20000912": "GB",
-    "20000913": "UA", "20000914": "RS", "20000919": "IL", "20000920": "MA",
-    "20000825": "AL", "20000832": "AT", "20000871": "CY", "20000878": "HR",
-    "20000881": "GR", "20000882": "HU", "20000891": "LV", "20000900": "RO",
-    # Extra IDs found in real data
-    "20000841": "BG", "20000872": "CZ", "20000986": "XK", "20000973": "TR",
-    "20000994": "PT", "20001026": "KS", "20001001": "ME", "20000990": "PT",
-    "20000876": "EE", "20000877": "FI", "20000830": "BA",
+    # Core EU member states
+    "20000839": "BE", "20000908": "BG", "20000905": "CZ", "20000875": "DK",
+    "20000879": "EE", "20000884": "FI", "20000890": "FR", "20000873": "DE",
+    "20000902": "GR", "20000886": "HU", "20000887": "IE", "20000922": "IT",
+    "20000894": "LV", "20000892": "LT", "20000895": "MT", "20000906": "NL",
+    "20000897": "AT", "20000909": "PL", "20000898": "PT", "20000899": "RO",
+    "20000901": "SI", "20000883": "ES", "20000903": "SE", "20000880": "EE",  # 20000880=EE confirmed
+    "20000885": "FI",  # confirmed: AIEDU OY is Finnish
+    # Non-EU Europe
+    "20000904": "CH", "20000888": "IS", "20000896": "NO", "20000912": "GB",
+    "20000913": "UA", "20000914": "RS", "20000910": "TR",
+    "20001026": "TR",  # confirmed: FIRAT UNIVERSITESI is Turkish
+    "20000825": "AL",
+    "20000986": "PL",  # confirmed: TECH2MARKET is Polish
+    "20000893": "GB",  # confirmed: 21C CONSULTANCY is UK
+    "20000973": "NL",  # confirmed: 8D RESEARCH is Dutch
+    "20000994": "RO",  # confirmed: ROHEALTH and EFFECTIVE DECISIONS are Romanian
+    "20001001": "SE",  # confirmed: Intersectionality Lab is Swedish
+    "31008860": "XK",  # Kosovo (non-standard ID in SEDIA)
+    # Others
+    "20000907": "CY", "20000841": "BG", "20000919": "IL", "20000920": "MA",
+    "20000878": "HR", "20000882": "HU", "20000891": "LV", "20000900": "RO",
+    "20000872": "CZ", "20000830": "BA", "20000876": "EE", "20000877": "FI",
+    "20000990": "PT", "20000832": "AT",
 }
 
 ORG_TYPE_MAP = {
@@ -80,7 +89,6 @@ def normalize_partner(hit: dict, topic_id: str) -> dict:
         "city":                 extract(meta, "city"),
         "country":              COUNTRY_MAP.get(country_id, country_id),
         "organization_type":    ORG_TYPE_MAP.get(org_type_id, org_type_id),
-        "_raw_country_id":      country_id,
         "sedia_description":    sedia_description,
         "keywords":             keywords,
         "all_active_calls_count": len(meta.get("topics", [])),
