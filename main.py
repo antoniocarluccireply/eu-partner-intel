@@ -180,62 +180,70 @@ async def get_org_track_record(
     pic: str = Query("", description="PIC number a 9 cifre"),
     name: str = Query("", description="Nome organizzazione"),
 ):
-    """Track record da SEDIA_PERSON."""
-    if not pic and not name:
-        return JSONResponse(status_code=400, content={"error": "Fornire pic o name"})
-
+    """
+    Track record da SEDIA_PERSON.
+    NOTA: SEDIA indicizza per nome (full-text), non per PIC.
+    Se viene passato solo pic, restituisce il link diretto senza dati di profilo.
+    Se viene passato name (o name+pic), cerca per nome e arricchisce con i dati.
+    """
     import json as _json
 
-    async def search_sedia(text: str):
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            r = await client.post(
-                SEDIA_URL,
-                params={"apiKey": "SEDIA_PERSON", "text": text, "pageSize": 10, "pageNumber": 1},
-                json={},
-                headers=HEADERS,
-            )
-        if r.status_code != 200:
-            return []
-        return r.json().get("results") or r.json().get("hits") or []
+    # Se abbiamo solo il PIC senza nome, restituiamo almeno il link diretto
+    if pic and not name:
+        return {
+            "pic": pic,
+            "portal_url": f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/org-details/{pic}",
+            "note": "Per ottenere il profilo completo chiama /org?pic={pic}&name=NOME_LEGALE oppure /org?name=NOME_LEGALE",
+        }
 
-    def find_match(hits, pic, name):
-        for hit in hits:
-            meta = hit.get("metadata", {})
-            hit_pic = (meta.get("pic") or [""])[0]
-            hit_name = (meta.get("name") or [""])[0].lower()
-            if pic and hit_pic == pic:
-                return hit
-            if name and name.lower() in hit_name:
-                return hit
-        return None
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "Fornire almeno name= per la ricerca profilo"})
 
-    # Try 1: search by PIC with quotes
-    hits = await search_sedia(f'"{pic}"' if pic else f'"{name}"')
-    match = find_match(hits, pic, name)
+    # Ricerca per nome su SEDIA (funziona perché il nome è full-text)
+    search_text = f'"{name}"' if len(name) > 6 else name
 
-    # Try 2: search by PIC without quotes
-    if not match and pic:
-        hits = await search_sedia(pic)
-        match = find_match(hits, pic, name)
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.post(
+            SEDIA_URL,
+            params={"apiKey": "SEDIA_PERSON", "text": search_text, "pageSize": 10, "pageNumber": 1},
+            json={},
+            headers=HEADERS,
+        )
 
-    # Try 3: search by name
-    if not match and name:
-        hits = await search_sedia(name)
-        match = find_match(hits, pic, name)
+    if r.status_code != 200:
+        return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
 
-    # Try 4: fallback to first result
+    hits = r.json().get("results") or r.json().get("hits") or []
+
+    # Trova il match migliore
+    match = None
+    for hit in hits:
+        meta = hit.get("metadata", {})
+        hit_pic = (meta.get("pic") or [""])[0]
+        hit_name = (meta.get("name") or [""])[0].lower()
+        # Match esatto per PIC se disponibile
+        if pic and hit_pic == pic:
+            match = hit
+            break
+        # Match per nome
+        if name.lower() in hit_name or hit_name in name.lower():
+            match = hit
+            break
+
+    # Fallback al primo risultato
     if not match and hits:
         match = hits[0]
 
     if not match:
-        return JSONResponse(status_code=404, content={
-            "error": f"Organizzazione non trovata",
-            "searched_pic": pic,
-            "searched_name": name,
-            "hint": "Prova con il nome legale completo usando ?name=NOME"
-        })
+        # Anche senza profilo SEDIA, restituiamo almeno il link se abbiamo il PIC
+        base = {"searched_name": name, "note": "Profilo non trovato in SEDIA"}
+        if pic:
+            base["pic"] = pic
+            base["portal_url"] = f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/org-details/{pic}"
+        return JSONResponse(status_code=404, content=base)
 
     meta = match.get("metadata", {})
+    pic_found = (meta.get("pic") or [""])[0] or pic
 
     public_projects_raw = (meta.get("publicProjects") or [""])[0]
     projects = []
@@ -252,7 +260,6 @@ async def get_org_track_record(
 
     total_projects = int((meta.get("noOfProjects") or ["0"])[0] or 0)
     country_id = (meta.get("country") or [""])[0]
-    pic_found = (meta.get("pic") or [""])[0]
 
     return {
         "pic":               pic_found,
