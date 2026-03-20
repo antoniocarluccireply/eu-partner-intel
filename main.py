@@ -107,11 +107,9 @@ async def get_partners(
     partners = []
     for hit in hits:
         meta = hit.get("metadata", {})
-        topics_active = meta.get("topics", [])
-        if topic_id not in topics_active:
-            continue
-        has_ps = extract(meta, "hasPartnerSearch")
-        if only_with_partner_search and has_ps != "true":
+        # keywords contiene i topic ID per cui l'org ha annunci partner attivi
+        keywords_meta = meta.get("keywords", [])
+        if topic_id not in keywords_meta:
             continue
         partner = normalize_partner(hit, topic_id)
         if country and partner["country"].upper() != country.upper():
@@ -200,7 +198,7 @@ async def debug_raw(topic_id: str = Query(...), page_size: int = Query(5)):
                 "hasPartnerSearch": h.get("metadata", {}).get("hasPartnerSearch"),
                 "country":       h.get("metadata", {}).get("country"),
                 "orgType":       h.get("metadata", {}).get("organisationType"),
-                "keywords":      h.get("metadata", {}).get("keywords", [])[:5],
+                "keywords_topics": h.get("metadata", {}).get("keywords", []),
             }
             for h in hits
         ],
