@@ -21,6 +21,8 @@ COUNTRY_MAP = {
     "20000902": "SK", "20000903": "SE", "20000904": "CH", "20000905": "CZ",
     "20000907": "CY", "20000908": "BG", "20000910": "TR", "20000912": "GB",
     "20000913": "UA", "20000914": "RS", "20000919": "IL", "20000920": "MA",
+    "20000825": "AL", "20000832": "AT", "20000871": "CY", "20000878": "HR",
+    "20000881": "GR", "20000882": "HU", "20000891": "LV", "20000900": "RO",
 }
 
 ORG_TYPE_MAP = {
@@ -67,7 +69,7 @@ def normalize_partner(hit: dict, topic_id: str) -> dict:
         "pic_number":         pic,
         "city":               extract(meta, "city"),
         "country":            COUNTRY_MAP.get(country_id, country_id),
-        "organization_type":  ORG_TYPE_MAP.get(org_type_id, org_type_id),
+        "organization_type":  ORG_TYPE_MAP.get(org_type_id, org_type_id),  # fallback = stringa raw
         "keywords":           keywords,
         "topics_active":      meta.get("topics", []),
         "projects_count":     extract(meta, "noOfProjects"),
@@ -118,6 +120,11 @@ async def get_partners(
 
     partners = []
     for hit in hits:
+        meta = hit.get("metadata", {})
+        # Il topic_id è nel campo topics degli annunci partner
+        topics_field = meta.get("topics") or []
+        if topic_id not in topics_field:
+            continue
         partner = normalize_partner(hit, topic_id)
         if country and partner["country"].upper() != country.upper():
             continue
