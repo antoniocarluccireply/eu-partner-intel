@@ -429,6 +429,107 @@ async def search_calls(
     }
 
 
+@app.get("/programmes")
+async def list_programmes(
+    status: str = Query("open", description="open | forthcoming | all"),
+):
+    """
+    Scopre tutti i programmi EU disponibili in SEDIA con conteggio call.
+    Usa type=1 + status filter, poi raggruppa per prefisso del topic_id (identifier).
+    """
+    import uuid as _uuid
+    import urllib.parse as _urlparse
+    import json as _json
+    from collections import defaultdict
+
+    STATUS_OPEN        = "31094502"
+    STATUS_FORTHCOMING = "31094501"
+
+    if status == "open":
+        status_terms = [STATUS_OPEN]
+    elif status == "forthcoming":
+        status_terms = [STATUS_FORTHCOMING]
+    else:
+        status_terms = [STATUS_OPEN, STATUS_FORTHCOMING]
+
+    query_obj     = {"bool": {"must": [
+        {"terms": {"type": ["1"]}},
+        {"terms": {"status": status_terms}},
+    ]}}
+    languages_obj = ["en"]
+    sort_obj      = [{"field": "identifier", "order": "ASC"}]
+
+    all_identifiers = []
+    seen_ids = set()
+    api_page = 1
+
+    while True:
+        boundary = f"----euft-{_uuid.uuid4().hex}"
+        chunks = []
+        for fname, (fn, fval, fct) in {
+            "query":     ("blob", _json.dumps(query_obj),     "application/json"),
+            "languages": ("blob", _json.dumps(languages_obj), "application/json"),
+            "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
+        }.items():
+            chunks.append(f"--{boundary}\r\n".encode())
+            chunks.append(f'Content-Disposition: form-data; name="{fname}"; filename="{fn}"\r\nContent-Type: {fct}\r\n\r\n'.encode())
+            chunks.append(fval.encode())
+            chunks.append(b"\r\n")
+        chunks.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(chunks)
+
+        params = {"pageSize": "500", "pageNumber": str(api_page), "text": "***", "apiKey": "SEDIA"}
+        url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(url, content=body, headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
+                "Origin": "https://ec.europa.eu",
+            })
+
+        if r.status_code != 200:
+            break
+
+        data = r.json()
+        hits = data.get("results") or []
+        total = data.get("totalResults") or 0
+
+        for hit in hits:
+            meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
+            ident_raw = meta.get("identifier") or []
+            tid = (ident_raw[0] if isinstance(ident_raw, list) and ident_raw else str(ident_raw)).strip().upper()
+            if tid and tid not in seen_ids:
+                seen_ids.add(tid)
+                all_identifiers.append(tid)
+
+        if len(hits) < 500 or len(all_identifiers) >= total:
+            break
+        api_page += 1
+
+    # Raggruppa per prefisso (primo segmento prima del secondo trattino)
+    # es. HORIZON-CL3-... -> HORIZON
+    #     EDF-2026-... -> EDF
+    #     DIGITAL-2026-... -> DIGITAL
+    #     AGRIP-MULTI-... -> AGRIP
+    programme_counts = defaultdict(int)
+    for tid in all_identifiers:
+        parts = tid.split("-")
+        prefix = parts[0] if parts else tid
+        programme_counts[prefix] += 1
+
+    programmes = sorted(
+        [{"programme": k, "call_count": v} for k, v in programme_counts.items()],
+        key=lambda x: -x["call_count"]
+    )
+
+    return {
+        "status_filter": status,
+        "total_calls":   len(all_identifiers),
+        "programmes":    programmes,
+    }
+
+
 @app.get("/debug-calls")
 async def debug_calls(
     programme: str = Query("EDF"),
