@@ -1,5 +1,5 @@
 “””
-EU Partner Intel — FastAPI proxy
+EU Partner Intel – FastAPI proxy
 “””
 
 import json
@@ -79,7 +79,7 @@ except Exception:
 
 # sedia_description: keywords autodichiarati del profilo SEDIA dell'org
 # NOTA: la descrizione testuale dell'annuncio (quella visibile nel portale)
-# è disponibile via FT-Announcements endpoint separato, non in SEDIA_PERSON
+# ? disponibile via FT-Announcements endpoint separato, non in SEDIA_PERSON
 raw_keywords = meta.get("keywords") or []
 sedia_description = ", ".join(raw_keywords[:20]) if raw_keywords else ""
 
@@ -199,7 +199,7 @@ if pic and not name:
 if not name:
     return JSONResponse(status_code=400, content={"error": "Fornire almeno name= per la ricerca profilo"})
 
-# Ricerca per nome su SEDIA (funziona perché il nome è full-text)
+# Ricerca per nome su SEDIA (funziona perch? il nome ? full-text)
 search_text = f'"{name}"' if len(name) > 6 else name
 
 async with httpx.AsyncClient(timeout=20.0) as client:
@@ -294,7 +294,7 @@ page_number: int = Query(1),
 ):
 “””
 Cerca call EU con title, status e deadline reali via SEDIA Search API (multipart).
-Stessa chiamata che fa il portale F&T — nessuna auth richiesta.
+Stessa chiamata che fa il portale F&T – nessuna auth richiesta.
 “””
 import uuid as _uuid
 import urllib.parse as _urlparse
@@ -310,7 +310,7 @@ elif status == "forthcoming":
 else:
     status_terms = [STATUS_OPEN, STATUS_FORTHCOMING]
 
-# Query DSL — identica a DEFAULT_OPEN_QUERY di euft
+# Query DSL -- identica a DEFAULT_OPEN_QUERY di euft
 must: list = [
     {"terms": {"type": ["1"]}},
     {"terms": {"status": status_terms}},
@@ -322,7 +322,7 @@ query_obj = {"bool": {"must": must}}
 languages_obj = ["en"]
 sort_obj = [{"field": "identifier", "order": "ASC"}]
 
-# Build multipart body — identico a _build_multipart_body di euft
+# Build multipart body -- identico a _build_multipart_body di euft
 def build_multipart(parts):
     boundary = f"----euft-{_uuid.uuid4().hex}"
     chunks = []
@@ -343,7 +343,7 @@ import json as _json
 kw_tokens = [k.strip() for k in keywords.upper().split()] if keywords else []
 cluster_upper = cluster.upper().strip() if cluster else ""
 
-# Paginazione: fetch pagine finché abbiamo abbastanza risultati filtrati
+# Paginazione: fetch pagine finch? abbiamo abbastanza risultati filtrati
 collected = []
 api_page = 1
 seen_ids = set()
