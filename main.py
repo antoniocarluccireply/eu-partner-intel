@@ -313,12 +313,15 @@ async def search_calls(
         status_terms = [STATUS_OPEN, STATUS_FORTHCOMING]
 
     # Query DSL -- identica a DEFAULT_OPEN_QUERY di euft
+    # type="0" = calls/grants (confirmed from SEDIA debug)
+    # frameworkProgramme is empty in SEDIA for most calls — filter by text instead
     must: list = [
-        {"terms": {"type": ["1"]}},
+        {"terms": {"type": ["0"]}},
         {"terms": {"status": status_terms}},
     ]
-    if programme:
-        must.append({"terms": {"frameworkProgramme": [programme.upper()]}})
+    # Programme filter: use text search on reference/identifier since frameworkProgramme is empty
+    # We pass programme as text query param instead
+    text_query = programme.upper() if programme else "***"
 
     query_obj = {"bool": {"must": must}}
     languages_obj = ["en"]
@@ -361,7 +364,7 @@ async def search_calls(
         params = {
             "pageSize":   "50",
             "pageNumber": str(api_page),
-            "text":       "***",
+            "text":       text_query,
             "apiKey":     "SEDIA",
         }
         url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
