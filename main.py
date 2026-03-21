@@ -464,6 +464,88 @@ async def search_calls(
     }
 
 
+@app.get("/debug-calls")
+async def debug_calls(
+    programme: str = Query("EDF"),
+    status: str = Query("open"),
+):
+    """Debug endpoint: mostra raw SEDIA response per capire struttura calls."""
+    import uuid as _uuid
+    import urllib.parse as _urlparse
+    import json as _json
+
+    STATUS_OPEN        = "31094502"
+    STATUS_FORTHCOMING = "31094501"
+    status_terms = [STATUS_OPEN] if status == "open" else [STATUS_FORTHCOMING] if status == "forthcoming" else [STATUS_OPEN, STATUS_FORTHCOMING]
+
+    # Try 1: with frameworkProgramme filter
+    must_with = [
+        {"terms": {"type": ["1"]}},
+        {"terms": {"status": status_terms}},
+        {"terms": {"frameworkProgramme": [programme.upper()]}},
+    ]
+    # Try 2: without type filter (maybe EDF uses different type)
+    must_no_type = [
+        {"terms": {"status": status_terms}},
+        {"terms": {"frameworkProgramme": [programme.upper()]}},
+    ]
+    # Try 3: just status, no programme filter - see what frameworkProgramme values exist
+    must_bare = [
+        {"terms": {"status": status_terms}},
+    ]
+
+    results = {}
+
+    for label, must in [("with_type_filter", must_with), ("no_type_filter", must_no_type), ("bare_status_only", must_bare)]:
+        query_obj = {"bool": {"must": must}}
+        languages_obj = ["en"]
+        sort_obj = [{"field": "identifier", "order": "ASC"}]
+
+        boundary = f"----euft-{_uuid.uuid4().hex}"
+        chunks = []
+        for field_name, (filename, payload_str, ct) in {
+            "query":     ("blob", _json.dumps(query_obj),     "application/json"),
+            "languages": ("blob", _json.dumps(languages_obj), "application/json"),
+            "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
+        }.items():
+            chunks.append(f"--{boundary}\r\n".encode())
+            chunks.append(f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\nContent-Type: {ct}\r\n\r\n'.encode())
+            chunks.append(payload_str.encode())
+            chunks.append(b"\r\n")
+        chunks.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(chunks)
+
+        params = {"pageSize": "3", "pageNumber": "1", "text": "***", "apiKey": "SEDIA"}
+        url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
+
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(url, content=body, headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
+                "Origin": "https://ec.europa.eu",
+            })
+
+        if r.status_code == 200:
+            data = r.json()
+            total = data.get("totalResults", 0)
+            hits = data.get("results") or []
+            sample = []
+            for h in hits[:2]:
+                meta = h.get("metadata", {}) if isinstance(h.get("metadata"), dict) else {}
+                sample.append({
+                    "reference": h.get("reference"),
+                    "title": h.get("content", "")[:80],
+                    "frameworkProgramme": meta.get("frameworkProgramme"),
+                    "type": meta.get("type"),
+                    "status": meta.get("status"),
+                })
+            results[label] = {"total": total, "sample": sample}
+        else:
+            results[label] = {"error": r.status_code, "text": r.text[:200]}
+
+    return results
+
+
 @app.get("/announcements")
 async def get_announcements_with_descriptions(
     topic_id: str = Query(..., description="Es: HORIZON-CL4-2026-04-DATA-06"),
