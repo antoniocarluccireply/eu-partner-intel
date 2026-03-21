@@ -289,71 +289,143 @@ async def get_org_track_record(
 @app.get("/calls")
 async def search_calls(
     keywords: str = Query("", description="Parole chiave nel topic_id: INFRA, DATA, CYBER, TWIN, 2026"),
-    programme: str = Query("HORIZON", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE"),
+    programme: str = Query("HORIZON", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE, CREA, ERASMUS"),
     cluster: str = Query("", description="Cluster Horizon: CL3, CL4, CL5, INFRA, HLTH"),
+    status: str = Query("open", description="open | forthcoming | all"),
     page_size: int = Query(20, le=100),
     page_number: int = Query(1),
 ):
     """
-    Cerca call EU dalla topic-list pubblica CE.
-    Filtra per programme (prefisso), cluster e keywords (AND logic).
-    Status/deadline non disponibili senza auth.
+    Cerca call EU aperte/future con title e deadline reali via SEDIA (type=1, multipart).
+    Filtra per programme sul prefisso del topic_id (identifier field).
     """
-    import re as _re
+    import uuid as _uuid
+    import urllib.parse as _urlparse
+    import json as _json
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.get(
-            "https://ec.europa.eu/info/funding-tenders/opportunities/data/topic-list.html",
-            headers={"Accept": "text/html,application/xhtml+xml"},
-        )
+    STATUS_OPEN        = "31094502"
+    STATUS_FORTHCOMING = "31094501"
 
-    if r.status_code != 200:
-        return JSONResponse(status_code=500, content={"error": f"topic-list non raggiungibile: {r.status_code}"})
+    if status == "open":
+        status_terms = [STATUS_OPEN]
+    elif status == "forthcoming":
+        status_terms = [STATUS_FORTHCOMING]
+    else:
+        status_terms = [STATUS_OPEN, STATUS_FORTHCOMING]
 
-    raw_ids = _re.findall(r"topic-details/([A-Z0-9][A-Z0-9._-]+)", r.text, _re.IGNORECASE)
-    seen = set()
-    all_ids = []
-    for tid in raw_ids:
-        tid_up = tid.upper()
-        if tid_up not in seen:
-            seen.add(tid_up)
-            all_ids.append(tid_up)
+    # Query DSL — type=1 = grants/calls, confermato dal debug
+    query_obj  = {"bool": {"must": [
+        {"terms": {"type": ["1"]}},
+        {"terms": {"status": status_terms}},
+    ]}}
+    languages_obj = ["en"]
+    sort_obj   = [{"field": "identifier", "order": "ASC"}]
 
     prog_upper    = programme.upper().strip() if programme else ""
     cluster_upper = cluster.upper().strip() if cluster else ""
     kw_tokens     = [k.strip() for k in keywords.upper().split()] if keywords else []
 
-    filtered = []
-    for tid in all_ids:
-        if prog_upper and not tid.startswith(prog_upper + "-"):
-            continue
-        if cluster_upper and f"-{cluster_upper}-" not in tid:
-            continue
-        if kw_tokens and not all(tok in tid for tok in kw_tokens):
-            continue
-        filtered.append(tid)
+    collected = []
+    seen_ids  = set()
+    api_page  = 1
+    total_api = None
+    FETCH_LIMIT = 20  # max API pages to avoid timeout
 
-    total = len(filtered)
-    start_idx = (page_number - 1) * page_size
-    page_ids = filtered[start_idx:start_idx + page_size]
+    while len(collected) < page_number * page_size and api_page <= FETCH_LIMIT:
+        boundary = f"----euft-{_uuid.uuid4().hex}"
+        chunks = []
+        for fname, (fn, fval, fct) in {
+            "query":     ("blob", _json.dumps(query_obj),     "application/json"),
+            "languages": ("blob", _json.dumps(languages_obj), "application/json"),
+            "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
+        }.items():
+            chunks.append(f"--{boundary}\r\n".encode())
+            chunks.append(f'Content-Disposition: form-data; name="{fname}"; filename="{fn}"\r\nContent-Type: {fct}\r\n\r\n'.encode())
+            chunks.append(fval.encode())
+            chunks.append(b"\r\n")
+        chunks.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(chunks)
 
-    calls = [
-        {
-            "topic_id":   tid,
-            "portal_url": f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{tid}",
-            "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={tid}",
-        }
-        for tid in page_ids
-    ]
+        params = {"pageSize": "50", "pageNumber": str(api_page), "text": "***", "apiKey": "SEDIA"}
+        url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
+
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(url, content=body, headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
+                "Origin": "https://ec.europa.eu",
+            })
+
+        if r.status_code != 200:
+            return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
+
+        data = r.json()
+        if total_api is None:
+            total_api = data.get("totalResults") or 0
+
+        hits = data.get("results") or []
+        if not hits:
+            break
+
+        for hit in hits:
+            meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
+
+            # topic_id viene dall'identifier field (es. HORIZON-CL4-2026-04-DATA-06)
+            ident_raw = meta.get("identifier") or []
+            topic_id  = (ident_raw[0] if isinstance(ident_raw, list) and ident_raw else str(ident_raw)).strip().upper()
+            if not topic_id or topic_id in seen_ids:
+                continue
+            seen_ids.add(topic_id)
+
+            # Filtro programme: prefisso del topic_id
+            if prog_upper and not topic_id.startswith(prog_upper + "-"):
+                continue
+            # Filtro cluster: sottostringa con trattini
+            if cluster_upper and f"-{cluster_upper}-" not in topic_id:
+                continue
+            # Filtro keywords: AND logic
+            if kw_tokens and not all(tok in topic_id for tok in kw_tokens):
+                continue
+
+            # Title
+            title = hit.get("title") or hit.get("summary") or topic_id
+
+            # Deadline
+            dl_raw = meta.get("deadlineDate") or []
+            deadline = (dl_raw[0] if isinstance(dl_raw, list) and dl_raw else str(dl_raw)).strip()
+            # Normalize: 2026-04-23T00:00:00.000+0000 -> 2026-04-23
+            if deadline and "T" in deadline:
+                deadline = deadline.split("T")[0]
+
+            # Call identifier (parent call)
+            call_id_raw = meta.get("callIdentifier") or []
+            call_id = (call_id_raw[0] if isinstance(call_id_raw, list) and call_id_raw else "").strip()
+
+            collected.append({
+                "topic_id":    topic_id,
+                "title":       str(title)[:150],
+                "call_id":     call_id,
+                "deadline":    deadline,
+                "status":      "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming",
+                "portal_url":  f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}",
+                "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}",
+            })
+
+        if len(hits) < 50:
+            break
+        api_page += 1
+
+    start_idx  = (page_number - 1) * page_size
+    page_items = collected[start_idx:start_idx + page_size]
 
     return {
-        "filters":       {"programme": programme, "cluster": cluster, "keywords": keywords},
-        "total_matched": total,
-        "returned":      len(calls),
+        "filters":       {"programme": programme, "cluster": cluster, "keywords": keywords, "status": status},
+        "total_matched": len(collected),
+        "returned":      len(page_items),
         "page":          page_number,
         "page_size":     page_size,
-        "calls":         calls,
-        "note":          "Status/deadline non disponibili senza auth. Verifica apertura su portal_url.",
+        "calls":         page_items,
+        "note":          "title e deadline reali da SEDIA. Usa partner_search_url per cercare partner.",
     }
 
 
