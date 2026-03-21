@@ -478,7 +478,8 @@ async def list_programmes(
         chunks.append(f"--{boundary}--\r\n".encode())
         body = b"".join(chunks)
 
-        params = {"pageSize": "500", "pageNumber": str(api_page), "text": "***", "apiKey": "SEDIA"}
+        # SEDIA caps at 50 per page regardless of pageSize param
+        params = {"pageSize": "50", "pageNumber": str(api_page), "text": "***", "apiKey": "SEDIA"}
         url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
 
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -503,7 +504,10 @@ async def list_programmes(
                 seen_ids.add(tid)
                 all_identifiers.append(tid)
 
-        if len(hits) < 500 or len(all_identifiers) >= total:
+        if not hits or len(hits) < 50 or len(all_identifiers) >= total:
+            break
+        # Safety: max 20 pages (1000 calls)
+        if api_page >= 20:
             break
         api_page += 1
 
