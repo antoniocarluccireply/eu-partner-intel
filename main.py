@@ -460,9 +460,17 @@ async def debug_calls(
                 sample.append({
                     "reference": h.get("reference"),
                     "title": h.get("content", "")[:80],
+                    "summary": h.get("summary", "")[:80],
                     "frameworkProgramme": meta.get("frameworkProgramme"),
+                    "frameworkProgrammeLabel": meta.get("frameworkProgrammeLabel") or meta.get("programmeName"),
                     "type": meta.get("type"),
                     "status": meta.get("status"),
+                    "identifier": meta.get("identifier"),
+                    "callIdentifier": meta.get("callIdentifier"),
+                    "topicIdentifier": meta.get("topicIdentifier"),
+                    "deadlineDate": meta.get("deadlineDate"),
+                    "openingDate": meta.get("openingDate"),
+                    "ALL_META_KEYS": list(meta.keys())[:30],
                 })
             results[label] = {"total": total, "sample": sample}
         else:
