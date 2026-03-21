@@ -288,182 +288,72 @@ async def get_org_track_record(
 
 @app.get("/calls")
 async def search_calls(
-    keywords: str = Query("", description="Parole chiave nel topic_id o titolo, es: INFRA, DATA, CYBER"),
-    programme: str = Query("", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE"),
+    keywords: str = Query("", description="Parole chiave nel topic_id: INFRA, DATA, CYBER, TWIN, 2026"),
+    programme: str = Query("HORIZON", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE"),
     cluster: str = Query("", description="Cluster Horizon: CL3, CL4, CL5, INFRA, HLTH"),
-    status: str = Query("open", description="open | forthcoming | all"),
     page_size: int = Query(20, le=100),
     page_number: int = Query(1),
 ):
     """
-    Cerca call EU con title, status e deadline reali via SEDIA Search API (multipart).
-    Stessa chiamata che fa il portale F&T -- nessuna auth richiesta.
+    Cerca call EU dalla topic-list pubblica CE.
+    Filtra per programme (prefisso), cluster e keywords (AND logic).
+    Status/deadline non disponibili senza auth.
     """
-    import uuid as _uuid
-    import urllib.parse as _urlparse
+    import re as _re
 
-    STATUS_OPEN        = "31094502"
-    STATUS_FORTHCOMING = "31094501"
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.get(
+            "https://ec.europa.eu/info/funding-tenders/opportunities/data/topic-list.html",
+            headers={"Accept": "text/html,application/xhtml+xml"},
+        )
 
-    if status == "open":
-        status_terms = [STATUS_OPEN]
-    elif status == "forthcoming":
-        status_terms = [STATUS_FORTHCOMING]
-    else:
-        status_terms = [STATUS_OPEN, STATUS_FORTHCOMING]
+    if r.status_code != 200:
+        return JSONResponse(status_code=500, content={"error": f"topic-list non raggiungibile: {r.status_code}"})
 
-    # Query DSL -- identica a DEFAULT_OPEN_QUERY di euft
-    # type="0" = calls/grants (confirmed from SEDIA debug)
-    # frameworkProgramme is empty in SEDIA for most calls — filter by text instead
-    must: list = [
-        {"terms": {"type": ["0"]}},
-        {"terms": {"status": status_terms}},
-    ]
-    # Programme filter: use text search on reference/identifier since frameworkProgramme is empty
-    # We pass programme as text query param instead
-    text_query = programme.upper() if programme else "***"
+    raw_ids = _re.findall(r"topic-details/([A-Z0-9][A-Z0-9._-]+)", r.text, _re.IGNORECASE)
+    seen = set()
+    all_ids = []
+    for tid in raw_ids:
+        tid_up = tid.upper()
+        if tid_up not in seen:
+            seen.add(tid_up)
+            all_ids.append(tid_up)
 
-    query_obj = {"bool": {"must": must}}
-    languages_obj = ["en"]
-    sort_obj = [{"field": "identifier", "order": "ASC"}]
-
-    # Build multipart body -- identico a _build_multipart_body di euft
-    def build_multipart(parts):
-        boundary = f"----euft-{_uuid.uuid4().hex}"
-        chunks = []
-        for field_name, (filename, payload_str, ct) in parts.items():
-            chunks.append(f"--{boundary}\r\n".encode())
-            chunks.append(
-                f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
-                f"Content-Type: {ct}\r\n\r\n".encode()
-            )
-            chunks.append(payload_str.encode())
-            chunks.append(b"\r\n")
-        chunks.append(f"--{boundary}--\r\n".encode())
-        return b"".join(chunks), boundary
-
-    import json as _json
-
-    # Full text search: keyword match su identifier (topic_id) e titolo
-    kw_tokens = [k.strip() for k in keywords.upper().split()] if keywords else []
+    prog_upper    = programme.upper().strip() if programme else ""
     cluster_upper = cluster.upper().strip() if cluster else ""
+    kw_tokens     = [k.strip() for k in keywords.upper().split()] if keywords else []
 
-    # Paginazione: fetch pagine finch? abbiamo abbastanza risultati filtrati
-    collected = []
-    api_page = 1
-    seen_ids = set()
-    total_api = None
+    filtered = []
+    for tid in all_ids:
+        if prog_upper and not tid.startswith(prog_upper + "-"):
+            continue
+        if cluster_upper and f"-{cluster_upper}-" not in tid:
+            continue
+        if kw_tokens and not all(tok in tid for tok in kw_tokens):
+            continue
+        filtered.append(tid)
 
-    while len(collected) < page_number * page_size:
-        body, boundary = build_multipart({
-            "query":     ("blob", _json.dumps(query_obj),     "application/json"),
-            "languages": ("blob", _json.dumps(languages_obj), "application/json"),
-            "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
-        })
-
-        params = {
-            "pageSize":   "50",
-            "pageNumber": str(api_page),
-            "text":       text_query,
-            "apiKey":     "SEDIA",
-        }
-        url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
-
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            r = await client.post(
-                url,
-                content=body,
-                headers={
-                    "Content-Type": f"multipart/form-data; boundary={boundary}",
-                    "Accept":       "application/json",
-                    "User-Agent":   "eu-partner-intel/1.0",
-                    "Origin":       "https://ec.europa.eu",
-                },
-            )
-
-        if r.status_code != 200:
-            return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
-
-        data = r.json()
-        if total_api is None:
-            total_api = data.get("totalResults") or data.get("total") or 0
-
-        hits = data.get("results") or data.get("items") or data.get("hits") or []
-        if not hits:
-            break
-
-        for hit in hits:
-            meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
-
-            # Estrai topic_id (reference o identifier)
-            topic_id = hit.get("reference", "") or (meta.get("identifier") or [""])[0] if meta.get("identifier") else ""
-            if not topic_id:
-                continue
-            topic_id = topic_id.upper()
-            if topic_id in seen_ids:
-                continue
-            seen_ids.add(topic_id)
-
-            # Filtra per cluster e keywords sul topic_id
-            if cluster_upper and f"-{cluster_upper}-" not in topic_id:
-                continue
-            if kw_tokens and not all(tok in topic_id for tok in kw_tokens):
-                continue
-
-            # Estrai campi ricchi
-            title    = hit.get("content") or hit.get("title") or hit.get("summary") or ""
-            if not title:
-                title = (meta.get("title") or meta.get("callTitle") or [""])[0] if meta.get("title") or meta.get("callTitle") else ""
-
-            deadline = ""
-            for dk in ["deadlineDate", "deadline", "submissionDeadline"]:
-                val = meta.get(dk)
-                if val:
-                    deadline = val[0] if isinstance(val, list) else val
-                    break
-
-            prog_val = programme.upper() if programme else ""
-            if not prog_val:
-                for pk in ["frameworkProgramme", "programme"]:
-                    val = meta.get(pk)
-                    if val:
-                        prog_val = val[0] if isinstance(val, list) else val
-                        break
-
-            status_raw = ""
-            for sk in ["status", "callStatus"]:
-                val = meta.get(sk)
-                if val:
-                    status_raw = val[0] if isinstance(val, list) else val
-                    break
-            status_label = "open" if status_raw == "31094502" else "forthcoming" if status_raw == "31094501" else status_raw
-
-            collected.append({
-                "topic_id":    topic_id,
-                "title":       str(title)[:200] if title else "",
-                "programme":   prog_val,
-                "status":      status_label,
-                "deadline":    str(deadline)[:20] if deadline else "",
-                "portal_url":  f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}",
-                "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}",
-            })
-
-        if len(hits) < 50:
-            break
-        api_page += 1
-
-    # Paginazione output
+    total = len(filtered)
     start_idx = (page_number - 1) * page_size
-    page_items = collected[start_idx:start_idx + page_size]
+    page_ids = filtered[start_idx:start_idx + page_size]
+
+    calls = [
+        {
+            "topic_id":   tid,
+            "portal_url": f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{tid}",
+            "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={tid}",
+        }
+        for tid in page_ids
+    ]
 
     return {
-        "filters":       {"programme": programme, "cluster": cluster, "keywords": keywords, "status": status},
-        "total_matched": len(collected),
-        "returned":      len(page_items),
+        "filters":       {"programme": programme, "cluster": cluster, "keywords": keywords},
+        "total_matched": total,
+        "returned":      len(calls),
         "page":          page_number,
         "page_size":     page_size,
-        "calls":         page_items,
-        "note":          "Usa partner_search_url per vedere chi cerca partner per quella call.",
+        "calls":         calls,
+        "note":          "Status/deadline non disponibili senza auth. Verifica apertura su portal_url.",
     }
 
 
@@ -499,7 +389,39 @@ async def debug_calls(
 
     results = {}
 
-    for label, must in [("with_type_filter", must_with), ("no_type_filter", must_no_type), ("bare_status_only", must_bare)]:
+
+    # Try euft DEFAULT_GRANTS_QUERY exactly
+    must_grants = [
+        {"terms": {"type": ["1", "2"]}},
+        {"terms": {"status": ["31094502"]}},
+    ]
+    # Try type=2 only
+    must_type2 = [
+        {"terms": {"type": ["2"]}},
+        {"terms": {"status": ["31094502"]}},
+    ]
+    # Try type=1 only
+    must_type1 = [
+        {"terms": {"type": ["1"]}},
+        {"terms": {"status": ["31094502"]}},
+    ]
+    # Bare - no type filter, show what types exist
+    must_bare = [
+        {"terms": {"status": ["31094502"]}},
+    ]
+    # Try forthcoming (31094501)
+    must_forthcoming = [
+        {"terms": {"type": ["1", "2"]}},
+        {"terms": {"status": ["31094501"]}},
+    ]
+
+    for label, must in [
+        ("grants_type_1_2", must_grants),
+        ("type_2_only", must_type2),
+        ("type_1_only", must_type1),
+        ("forthcoming_type_1_2", must_forthcoming),
+        ("bare_all_types", must_bare),
+    ]:
         query_obj = {"bool": {"must": must}}
         languages_obj = ["en"]
         sort_obj = [{"field": "identifier", "order": "ASC"}]
