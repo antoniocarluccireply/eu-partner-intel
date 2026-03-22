@@ -286,6 +286,146 @@ async def get_org_track_record(
 
 
 
+
+# ---- Budget/description helpers ported from euft ----
+
+def _euft_safe_json(raw):
+    if raw is None: return None
+    if isinstance(raw, (dict, list)): return raw
+    if not isinstance(raw, str): raw = str(raw)
+    raw = raw.strip()
+    if not raw: return None
+    try:
+        import json as _j
+        return _j.loads(raw)
+    except Exception:
+        return None
+
+def _euft_first_text(value):
+    if value is None: return ""
+    if isinstance(value, str): return value.strip()
+    if isinstance(value, (int, float)): return str(value).strip()
+    if isinstance(value, list):
+        for item in value:
+            t = _euft_first_text(item)
+            if t: return t
+        return ""
+    if isinstance(value, dict):
+        for k in ("value", "label", "name", "title", "text"):
+            if k in value:
+                t = _euft_first_text(value[k])
+                if t: return t
+        for v in value.values():
+            t = _euft_first_text(v)
+            if t: return t
+        return ""
+    return str(value).strip()
+
+def _euft_safe_float(v):
+    if v is None: return None
+    if isinstance(v, (int, float)): return float(v)
+    try:
+        s = str(v).strip().replace(" ", "").replace("\u00A0", "")
+        return float(s) if s else None
+    except Exception:
+        return None
+
+def _euft_budget_overviews(md):
+    raw = md.get("budgetOverview")
+    parsed = _euft_safe_json(raw)
+    if isinstance(parsed, list):
+        out = []
+        for item in parsed:
+            if isinstance(item, dict): out.append(item)
+            elif isinstance(item, str):
+                p = _euft_safe_json(item)
+                if isinstance(p, dict): out.append(p)
+        return out
+    if isinstance(parsed, dict): return [parsed]
+    return []
+
+def _euft_actions(md):
+    raw = md.get("actions")
+    parsed = _euft_safe_json(raw)
+    out = []
+    if isinstance(parsed, dict): return [parsed]
+    if isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, dict): out.append(item)
+            elif isinstance(item, str):
+                p = _euft_safe_json(item)
+                if isinstance(p, list): out.extend([x for x in p if isinstance(x, dict)])
+                elif isinstance(p, dict): out.append(p)
+        return out
+    return []
+
+def _euft_extract_budget(md, topic_id):
+    """Extract min_meur, max_meur from budgetOverview or actions."""
+    min_meur = None
+    max_meur = None
+
+    # Try budgetOverview -> budgetTopicActionMap
+    for overview in _euft_budget_overviews(md):
+        topic_map = overview.get("budgetTopicActionMap")
+        if not isinstance(topic_map, dict): continue
+        for _tid, entries in topic_map.items():
+            if not isinstance(entries, list): continue
+            for entry in entries:
+                if not isinstance(entry, dict): continue
+                action_full = str(entry.get("action") or "").strip()
+                action_code = action_full.split(" - ", 1)[0].strip()
+                # Match if action_code matches topic_id or is substring
+                if topic_id and action_code and (
+                    action_code == topic_id or
+                    topic_id.startswith(action_code + "-") or
+                    action_code.startswith(topic_id + "-")
+                ) or not topic_id:
+                    mn = _euft_safe_float(entry.get("minContribution"))
+                    mx = _euft_safe_float(entry.get("maxContribution"))
+                    if mn is not None: min_meur = mn / 1_000_000
+                    if mx is not None: max_meur = mx / 1_000_000
+                    # Try budgetYearMap for 2026
+                    if not min_meur and not max_meur:
+                        bym = entry.get("budgetYearMap")
+                        if isinstance(bym, dict):
+                            for yr in ["2026", "2025", "2027"]:
+                                yval = _euft_safe_float(bym.get(yr))
+                                if yval:
+                                    min_meur = max_meur = yval / 1_000_000
+                                    break
+                    if min_meur is not None or max_meur is not None:
+                        return min_meur, max_meur
+
+    # Fallback: actions -> expectedGrant
+    for action in _euft_actions(md):
+        eg = _euft_safe_float(action.get("expectedGrant"))
+        if eg is not None:
+            return eg / 1_000_000, eg / 1_000_000
+
+    return None, None
+
+def _euft_extract_description(root, md):
+    """Extract description/destination from SEDIA hit."""
+    dest = (
+        _euft_first_text(root.get("destinationDescription")) or
+        _euft_first_text(root.get("destinationGroup")) or
+        _euft_first_text(md.get("destinationDescription")) or
+        _euft_first_text(md.get("destinationGroup")) or
+        _euft_first_text(md.get("topicConditions")) or
+        ""
+    )
+    return dest[:500] if dest else ""
+
+def _euft_extract_programme_division(md):
+    """Extract programme division / focus area."""
+    return (
+        _euft_first_text(md.get("programmeDivision")) or
+        _euft_first_text(md.get("focusArea")) or
+        ""
+    )
+
+# ---- End helpers ----
+
 @app.get("/calls")
 async def search_calls(
     keywords: str = Query("", description="Parole chiave nel topic_id: INFRA, DATA, CYBER, TWIN, 2026"),
@@ -423,6 +563,11 @@ async def search_calls(
                 "status":      "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming",
                 "portal_url":  f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}",
                 "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}",
+                "budget": budget_meur,
+                "min_grant_meur": round(min_meur, 2) if min_meur else None,
+                "max_grant_meur": round(max_meur, 2) if max_meur else None,
+                "description": description,
+                "programme_division": prog_division,
             })
 
         if len(hits) < 50:
