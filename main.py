@@ -331,9 +331,13 @@ async def search_calls(
     seen_ids  = set()
     api_page  = 1
     total_api = None
-    FETCH_LIMIT = 20  # max API pages to avoid timeout (1000 calls max)
 
-    while len(collected) < page_number * page_size and api_page <= FETCH_LIMIT:
+    # If deadline filters are active, fetch ALL pages internally (ignore pagination)
+    # so the agent gets complete results in one call
+    fetch_all = bool(deadline_after or deadline_before or not programme)
+    FETCH_LIMIT = 20  # max API pages (1000 calls max)
+
+    while api_page <= FETCH_LIMIT:
         boundary = f"----euft-{_uuid.uuid4().hex}"
         chunks = []
         for fname, (fn, fval, fct) in {
@@ -423,10 +427,14 @@ async def search_calls(
 
         if len(hits) < 50:
             break
+        # If not fetching all, stop once we have enough for current page
+        if not fetch_all and len(collected) >= page_number * page_size:
+            break
         api_page += 1
 
-    start_idx  = (page_number - 1) * page_size
-    page_items = collected[start_idx:start_idx + page_size]
+    start_idx  = (page_number - 1) * page_size if not fetch_all else 0
+    page_size_effective = page_size if not fetch_all else len(collected)
+    page_items = collected[start_idx:start_idx + page_size_effective]
 
     return {
         "filters":       {"programme": programme, "cluster": cluster, "keywords": keywords, "status": status, "deadline_after": deadline_after, "deadline_before": deadline_before},
