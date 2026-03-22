@@ -555,19 +555,79 @@ async def search_calls(
                 if deadline > deadline_before:
                     continue
 
+            # Extract additional metadata fields
+            def _first(lst, default=""):
+                if isinstance(lst, list) and lst:
+                    v = lst[0]
+                    return str(v).strip() if v is not None else default
+                if lst is not None and not isinstance(lst, list):
+                    return str(lst).strip()
+                return default
+
+            call_title      = _first(meta.get("callTitle"))
+            type_of_action  = _first(meta.get("typeOfMGAs"))
+            keywords_raw    = meta.get("keywords") or []
+            keywords_list   = [str(k).strip() for k in keywords_raw if k][:15]
+            cross_cutting   = meta.get("crossCuttingPriorities") or []
+            cross_list      = [str(c).strip() for c in cross_cutting if c]
+            prog_period     = _first(meta.get("programmePeriod"))
+            ccm2id          = _first(meta.get("ccm2Id"))
+            topic_cond_raw  = meta.get("topicConditions") or []
+            topic_conditions = [str(t).strip() for t in topic_cond_raw if t][:5]
+
+            # primary_url from root or construct from topic_id
+            primary_url = (
+                _euft_first_text(hit.get("url") or hit.get("link")) or
+                f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}"
+            )
+
+            # publication_date from budgetEntry (already computed in _euft_extract_budget)
+            # Re-extract for publication date
+            pub_date = ""
+            for overview in _euft_budget_overviews(meta):
+                topic_map = overview.get("budgetTopicActionMap")
+                if not isinstance(topic_map, dict): continue
+                for _tid, entries in topic_map.items():
+                    if not isinstance(entries, list): continue
+                    for entry in entries:
+                        if not isinstance(entry, dict): continue
+                        pd = _euft_first_text(entry.get("plannedOpeningDate"))
+                        if pd:
+                            pub_date = pd[:10] if "T" not in pd else pd.split("T")[0]
+                            break
+                    if pub_date: break
+                if pub_date: break
+            if not pub_date:
+                for action in _euft_actions(meta):
+                    pd = _euft_first_text(action.get("plannedOpeningDate"))
+                    if pd:
+                        pub_date = pd[:10] if "T" not in pd else pd.split("T")[0]
+                        break
+
+            status_val = "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming"
+
             collected.append({
-                "topic_id":    topic_id,
-                "title":       str(title)[:150],
-                "call_id":     call_id,
-                "deadline":    deadline,
-                "status":      "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming",
-                "portal_url":  f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}",
-                "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}",
-                "budget": budget_meur,
-                "min_grant_meur": round(min_meur, 2) if min_meur else None,
-                "max_grant_meur": round(max_meur, 2) if max_meur else None,
-                "description": description,
+                "topic_id":           topic_id,
+                "title":              str(title)[:200],
+                "call_id":            call_id,
+                "call_title":         call_title,
+                "status":             status_val,
+                "deadline":           deadline,
+                "publication_date":   pub_date,
+                "type_of_action":     type_of_action,
+                "budget":             budget_meur,
+                "min_grant_meur":     round(min_meur, 2) if min_meur else None,
+                "max_grant_meur":     round(max_meur, 2) if max_meur else None,
+                "description":        description,
+                "keywords":           keywords_list,
+                "cross_cutting_priorities": cross_list,
                 "programme_division": prog_division,
+                "programme_period":   prog_period,
+                "topic_conditions":   topic_conditions,
+                "ccm2id":             ccm2id,
+                "portal_url":         f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}",
+                "primary_url":        primary_url,
+                "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}",
             })
 
         if len(hits) < 50:
