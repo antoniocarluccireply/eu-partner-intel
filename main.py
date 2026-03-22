@@ -424,6 +424,48 @@ def _euft_extract_programme_division(md):
         ""
     )
 
+
+import re as _re_html
+
+def _strip_html(text):
+    """Remove HTML tags from text."""
+    if not text:
+        return ""
+    clean = _re_html.sub(r"<[^>]+>", " ", str(text))
+    clean = _re_html.sub(r"\s+", " ", clean).strip()
+    return clean[:500]
+
+# SEDIA type_of_action numeric ID -> human readable
+TYPE_OF_ACTION_MAP = {
+    "44175699": "DA",        # Development Action
+    "44175700": "RIA",       # Research & Innovation Action
+    "44175701": "IA",        # Innovation Action
+    "44175702": "CSA",       # Coordination & Support Action
+    "44175703": "COFUND",    # COFUND
+    "44175704": "ERC",       # ERC
+    "44175705": "MSCA",      # MSCA
+    "44175706": "PCP",       # Pre-commercial Procurement
+    "44175707": "PPI",       # Public Procurement of Innovative Solutions
+    "44175708": "ERA-NET",   # ERA-NET
+    "44175709": "RA",        # Research Action (EDF)
+    "44175710": "SME",       # SME Instrument
+    "44175711": "PRIZE",     # Prize
+    "44175712": "LUMP",      # Lump Sum
+    "31094902": "RIA",
+    "31094903": "IA",
+    "31094904": "CSA",
+    "31094905": "COFUND",
+    "31094906": "ERC",
+}
+
+# SEDIA programme_division numeric ID -> human readable (partial)
+PROG_DIVISION_MAP = {
+    "44181033": "EDF-DA",     # EDF Development Actions
+    "44181034": "EDF-RA",     # EDF Research Actions
+    "43298664": "AGRIP",
+    "43251814": "CREA-MEDIA",
+}
+
 # ---- End helpers ----
 
 @app.get("/calls")
@@ -565,15 +607,19 @@ async def search_calls(
                 return default
 
             call_title      = _first(meta.get("callTitle"))
-            type_of_action  = _first(meta.get("typeOfMGAs"))
+            type_raw = _first(meta.get("typeOfMGAs"))
+            type_of_action = TYPE_OF_ACTION_MAP.get(type_raw, type_raw)
             keywords_raw    = meta.get("keywords") or []
-            keywords_list   = [str(k).strip() for k in keywords_raw if k][:15]
+            keywords_list   = [
+                str(k).strip() for k in keywords_raw
+                if k and not str(k).strip().startswith(("HORIZON-","EDF-","DIGITAL-","ERASMUS-","CREA-","CERV-","CEF-"))
+            ][:15]
             cross_cutting   = meta.get("crossCuttingPriorities") or []
             cross_list      = [str(c).strip() for c in cross_cutting if c]
             prog_period     = _first(meta.get("programmePeriod"))
             ccm2id          = _first(meta.get("ccm2Id"))
             topic_cond_raw  = meta.get("topicConditions") or []
-            topic_conditions = [str(t).strip() for t in topic_cond_raw if t][:5]
+            topic_conditions = [_strip_html(str(t)) for t in topic_cond_raw if t][:3]
 
             # primary_url from root or construct from topic_id
             primary_url = (
@@ -614,8 +660,9 @@ async def search_calls(
                 budget_meur = ""
 
             # Description and programme division
-            description = _euft_extract_description(hit, meta)
-            prog_division = _euft_extract_programme_division(meta)
+            description = _strip_html(_euft_extract_description(hit, meta))
+            prog_division_raw = _euft_extract_programme_division(meta)
+            prog_division = PROG_DIVISION_MAP.get(prog_division_raw, prog_division_raw)
 
             status_val = "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming"
 
