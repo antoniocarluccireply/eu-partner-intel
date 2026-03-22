@@ -289,9 +289,11 @@ async def get_org_track_record(
 @app.get("/calls")
 async def search_calls(
     keywords: str = Query("", description="Parole chiave nel topic_id: INFRA, DATA, CYBER, TWIN, 2026"),
-    programme: str = Query("HORIZON", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE, CREA, ERASMUS"),
+    programme: str = Query("", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE, CREA, ERASMUS"),
     cluster: str = Query("", description="Cluster Horizon: CL3, CL4, CL5, INFRA, HLTH"),
     status: str = Query("open", description="open | forthcoming | all"),
+    deadline_after: str = Query("", description="Filtra deadline dopo questa data: YYYY-MM-DD, es: 2026-05-01"),
+    deadline_before: str = Query("", description="Filtra deadline prima di questa data: YYYY-MM-DD, es: 2026-08-31"),
     page_size: int = Query(20, le=100),
     page_number: int = Query(1),
 ):
@@ -329,7 +331,7 @@ async def search_calls(
     seen_ids  = set()
     api_page  = 1
     total_api = None
-    FETCH_LIMIT = 20  # max API pages to avoid timeout
+    FETCH_LIMIT = 20  # max API pages to avoid timeout (1000 calls max)
 
     while len(collected) < page_number * page_size and api_page <= FETCH_LIMIT:
         boundary = f"----euft-{_uuid.uuid4().hex}"
@@ -401,6 +403,14 @@ async def search_calls(
             call_id_raw = meta.get("callIdentifier") or []
             call_id = (call_id_raw[0] if isinstance(call_id_raw, list) and call_id_raw else "").strip()
 
+            # Deadline range filter
+            if deadline_after and deadline:
+                if deadline < deadline_after:
+                    continue
+            if deadline_before and deadline:
+                if deadline > deadline_before:
+                    continue
+
             collected.append({
                 "topic_id":    topic_id,
                 "title":       str(title)[:150],
@@ -419,7 +429,7 @@ async def search_calls(
     page_items = collected[start_idx:start_idx + page_size]
 
     return {
-        "filters":       {"programme": programme, "cluster": cluster, "keywords": keywords, "status": status},
+        "filters":       {"programme": programme, "cluster": cluster, "keywords": keywords, "status": status, "deadline_after": deadline_after, "deadline_before": deadline_before},
         "total_matched": len(collected),
         "returned":      len(page_items),
         "page":          page_number,
