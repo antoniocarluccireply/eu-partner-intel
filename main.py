@@ -604,6 +604,19 @@ async def search_calls(
                         pub_date = pd[:10] if "T" not in pd else pd.split("T")[0]
                         break
 
+            # Budget extraction
+            min_meur, max_meur = _euft_extract_budget(meta, topic_id)
+            if max_meur is not None:
+                budget_meur = f"{max_meur:.1f}M EUR"
+            elif min_meur is not None:
+                budget_meur = f"{min_meur:.1f}M EUR"
+            else:
+                budget_meur = ""
+
+            # Description and programme division
+            description = _euft_extract_description(hit, meta)
+            prog_division = _euft_extract_programme_division(meta)
+
             status_val = "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming"
 
             collected.append({
