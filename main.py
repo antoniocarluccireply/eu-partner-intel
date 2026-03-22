@@ -428,11 +428,18 @@ def _euft_extract_programme_division(md):
 import re as _re_html
 
 def _strip_html(text):
-    """Remove HTML tags from text."""
+    """Remove HTML tags and decode HTML entities from text."""
     if not text:
         return ""
-    clean = _re_html.sub(r"<[^>]+>", " ", str(text))
+    import html as _html_mod
+    # Decode HTML entities first (&gt; -> >, &amp; -> &, etc.)
+    decoded = _html_mod.unescape(str(text))
+    # Remove HTML tags
+    clean = _re_html.sub(r"<[^>]+>", " ", decoded)
+    # Collapse whitespace
     clean = _re_html.sub(r"\s+", " ", clean).strip()
+    # Remove leading punctuation artifacts like "> " at start
+    clean = _re_html.sub(r'^[">\s]+', "", clean).strip()
     return clean[:500]
 
 # SEDIA type_of_action numeric ID -> human readable
@@ -609,6 +616,14 @@ async def search_calls(
             call_title      = _first(meta.get("callTitle"))
             type_raw = _first(meta.get("typeOfMGAs"))
             type_of_action = TYPE_OF_ACTION_MAP.get(type_raw, type_raw)
+            # EDF: refine DA vs RA from call_id pattern
+            if type_of_action == "DA" and call_id:
+                if "-RA-" in call_id or call_id.endswith("-RA"):
+                    type_of_action = "RA"
+                elif "-DA-" in call_id or call_id.endswith("-DA"):
+                    type_of_action = "DA"
+                elif "-LS-RA-" in call_id:
+                    type_of_action = "RA"
             keywords_raw    = meta.get("keywords") or []
             keywords_list   = [
                 str(k).strip() for k in keywords_raw
