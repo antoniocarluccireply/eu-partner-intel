@@ -888,6 +888,92 @@ async def list_programmes(
     }
 
 
+@app.get("/debug-types")
+async def debug_types():
+    """Fetch all open calls and return unique typeOfMGAs IDs with examples."""
+    import uuid as _uuid
+    import urllib.parse as _urlparse
+    import json as _json
+    from collections import defaultdict
+
+    query_obj     = {"bool": {"must": [
+        {"terms": {"type": ["1"]}},
+        {"terms": {"status": ["31094502", "31094501"]}},
+    ]}}
+    languages_obj = ["en"]
+    sort_obj      = [{"field": "identifier", "order": "ASC"}]
+
+    type_map = defaultdict(list)
+    api_page = 1
+
+    while api_page <= 20:
+        boundary = f"----euft-{_uuid.uuid4().hex}"
+        chunks = []
+        for fname, (fn, fval, fct) in {
+            "query":     ("blob", _json.dumps(query_obj),     "application/json"),
+            "languages": ("blob", _json.dumps(languages_obj), "application/json"),
+            "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
+        }.items():
+            chunks.append(f"--{boundary}\r\n".encode())
+            chunks.append(f'Content-Disposition: form-data; name="{fname}"; filename="{fn}"\r\nContent-Type: {fct}\r\n\r\n'.encode())
+            chunks.append(fval.encode())
+            chunks.append(b"\r\n")
+        chunks.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(chunks)
+
+        params = {"pageSize": "50", "pageNumber": str(api_page), "text": "***", "apiKey": "SEDIA"}
+        url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
+
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(url, content=body, headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
+                "Origin": "https://ec.europa.eu",
+            })
+
+        if r.status_code != 200:
+            break
+
+        data = r.json()
+        hits = data.get("results") or []
+        total = data.get("totalResults") or 0
+
+        for hit in hits:
+            meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
+            type_ids = meta.get("typeOfMGAs") or []
+            ident_raw = meta.get("identifier") or []
+            tid = (ident_raw[0] if isinstance(ident_raw, list) and ident_raw else "").strip()
+            title = hit.get("title") or hit.get("summary") or ""
+
+            for t in type_ids:
+                if t and len(type_map[t]) < 3:
+                    type_map[t].append({"topic_id": tid, "title": str(title)[:80]})
+
+        if not hits or len(hits) < 50:
+            break
+        api_page += 1
+
+    # Build result with current mapping status
+    result = []
+    for type_id, examples in sorted(type_map.items()):
+        mapped = TYPE_OF_ACTION_MAP.get(str(type_id), "UNKNOWN")
+        result.append({
+            "type_id": type_id,
+            "mapped_to": mapped,
+            "known": mapped != "UNKNOWN",
+            "examples": examples,
+        })
+
+    unknown = [r for r in result if not r["known"]]
+    known   = [r for r in result if r["known"]]
+
+    return {
+        "total_unique_type_ids": len(result),
+        "unknown_ids": unknown,
+        "known_ids": known,
+    }
+
+
 @app.get("/debug-budget")
 async def debug_budget(
     topic_id: str = Query(..., description="Es: HORIZON-CL4-2026-04-DATA-06"),
