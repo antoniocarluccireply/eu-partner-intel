@@ -856,34 +856,33 @@ async def search_calls(
             else:
                 budget_meur = ""
 
-            # Description: prefer descriptionByte (full topic text) over topicConditions
-            import base64 as _b64_desc
+            # Description: descriptionByte is raw HTML (NOT base64) — use directly
+            import re as _re_desc
             description = ""
             desc_byte_raw2 = meta.get("descriptionByte") or []
             desc_byte_str2 = (desc_byte_raw2[0] if isinstance(desc_byte_raw2, list) and desc_byte_raw2 else "").strip()
             if desc_byte_str2:
                 try:
-                    import gzip as _gzip
-                    _raw = _b64_desc.b64decode(desc_byte_str2)
-                    # Try gzip decompression first
-                    try:
-                        _raw = _gzip.decompress(_raw)
-                    except Exception:
-                        pass
-                    _full_html = _raw.decode("utf-8", errors="replace")
-                    _full_text = _strip_html(_full_html)
-                    # Extract Expected Outcome section
-                    import re as _re_desc
-                    _scope = _re_desc.search(r"Scope[:\\s]*(.{100,600}?)(?:Expected|Proposals|$)", _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE)
-                    _outcome = _re_desc.search(r"Expected Outcome[:\\s]*(.{100,600}?)(?:Scope|Proposals|$)", _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE)
+                    _full_text = _strip_html(desc_byte_str2)
+                    _outcome = _re_desc.search(
+                        r"Expected Outcome[^:]*:(.{150,1200}?)(?:Scope[^:]*:|$)",
+                        _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE
+                    )
+                    _scope = _re_desc.search(
+                        r"Scope[^:]*:(.{150,1200}?)(?:Expected Outcome|Proposals should|$)",
+                        _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE
+                    )
                     if _outcome:
-                        description = _outcome.group(1).strip()[:400]
+                        description = _outcome.group(1).strip()[:1000]
                     elif _scope:
-                        description = _scope.group(1).strip()[:400]
+                        description = _scope.group(1).strip()[:1000]
                     else:
-                        # Skip conditions boilerplate, take first meaningful paragraph
-                        _paras = [p.strip() for p in _full_text.split("  ") if len(p.strip()) > 80 and "Admissibility" not in p and "Annex" not in p]
-                        description = _paras[0][:400] if _paras else ""
+                        _paras = [p.strip() for p in _full_text.split("  ")
+                                  if len(p.strip()) > 100
+                                  and "Admissibility" not in p
+                                  and "Annex" not in p
+                                  and "portal.ec" not in p]
+                        description = " ".join(_paras[:2])[:1000] if _paras else ""
                 except Exception:
                     pass
             if not description:
@@ -891,29 +890,15 @@ async def search_calls(
             prog_division_raw = _euft_extract_programme_division(meta)
             prog_division = PROG_DIVISION_MAP.get(prog_division_raw, prog_division_raw)
 
-            # TRL: extract from descriptionByte (base64 full topic HTML) or topic_conditions
+            # TRL: extract from full text (descriptionByte already parsed above)
             import re as _re_trl
-            import base64 as _b64
             trl = ""
-            # Try descriptionByte first (full topic description)
-            desc_byte_raw = meta.get("descriptionByte") or []
-            desc_byte_str = (desc_byte_raw[0] if isinstance(desc_byte_raw, list) and desc_byte_raw else "").strip()
-            if desc_byte_str:
-                try:
-                    decoded_html = _b64.b64decode(desc_byte_str).decode("utf-8", errors="replace")
-                    decoded_text = _strip_html(decoded_html)
-                    m_trl = _re_trl.search(r"TRL\s*([3-9](?:\s*[-–]\s*[4-9])?)", decoded_text, _re_trl.IGNORECASE)
-                    if m_trl:
-                        trl = "TRL " + m_trl.group(1).replace(" ", "").replace("–", "-")
-                except Exception:
-                    pass
-            # Fallback: description or topic_conditions
-            if not trl:
-                for src in [description, " ".join(topic_conditions)]:
-                    m = _re_trl.search(r"TRL\s*([3-9](?:\s*[-–]\s*[4-9])?)", src or "", _re_trl.IGNORECASE)
-                    if m:
-                        trl = "TRL " + m.group(1).replace(" ", "").replace("–", "-")
-                        break
+            _trl_src = description + " " + " ".join(topic_conditions)
+            if desc_byte_str2:
+                _trl_src = _strip_html(desc_byte_str2) + " " + _trl_src
+            m_trl = _re_trl.search(r"TRL\s*([3-9](?:\s*[-\u2013]\s*[4-9])?)", _trl_src, _re_trl.IGNORECASE)
+            if m_trl:
+                trl = "TRL " + m_trl.group(1).replace(" ", "").replace("\u2013", "-")
 
             status_val = "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming"
 
