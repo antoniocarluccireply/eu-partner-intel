@@ -858,7 +858,14 @@ async def search_calls(
             desc_byte_str2 = (desc_byte_raw2[0] if isinstance(desc_byte_raw2, list) and desc_byte_raw2 else "").strip()
             if desc_byte_str2:
                 try:
-                    _full_html = _b64_desc.b64decode(desc_byte_str2).decode("utf-8", errors="replace")
+                    import gzip as _gzip
+                    _raw = _b64_desc.b64decode(desc_byte_str2)
+                    # Try gzip decompression first
+                    try:
+                        _raw = _gzip.decompress(_raw)
+                    except Exception:
+                        pass
+                    _full_html = _raw.decode("utf-8", errors="replace")
                     _full_text = _strip_html(_full_html)
                     # Extract Expected Outcome section
                     import re as _re_desc
