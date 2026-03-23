@@ -1431,6 +1431,141 @@ async def list_programmes(
     }
 
 
+@app.get("/breakdown")
+async def breakdown_by_cluster(
+    programme: str = Query("HORIZON", description="Programma: HORIZON, EDF, DIGITAL"),
+    status: str = Query("open", description="open | forthcoming | all"),
+):
+    """
+    Raggruppa le call di un programma per cluster/tema contando i topic_id.
+    """
+    import uuid as _uuid
+    import urllib.parse as _urlparse
+    import json as _json
+    from collections import defaultdict
+
+    STATUS_OPEN        = "31094502"
+    STATUS_FORTHCOMING = "31094501"
+
+    if status == "open":
+        status_terms = [STATUS_OPEN]
+    elif status == "forthcoming":
+        status_terms = [STATUS_FORTHCOMING]
+    else:
+        status_terms = [STATUS_OPEN, STATUS_FORTHCOMING]
+
+    query_obj     = {"bool": {"must": [
+        {"terms": {"type": ["1"]}},
+        {"terms": {"status": status_terms}},
+    ]}}
+    languages_obj = ["en"]
+    sort_obj      = [{"field": "identifier", "order": "ASC"}]
+
+    prog_upper = programme.upper().strip()
+    all_topics = []
+    seen_ids = set()
+    api_page = 1
+
+    while api_page <= 20:
+        boundary = f"----euft-{_uuid.uuid4().hex}"
+        chunks = []
+        for fname, (fn, fval, fct) in {
+            "query":     ("blob", _json.dumps(query_obj),     "application/json"),
+            "languages": ("blob", _json.dumps(languages_obj), "application/json"),
+            "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
+        }.items():
+            chunks.append(f"--{boundary}\r\n".encode())
+            chunks.append(f'Content-Disposition: form-data; name="{fname}"; filename="{fn}"\r\nContent-Type: {fct}\r\n\r\n'.encode())
+            chunks.append(fval.encode())
+            chunks.append(b"\r\n")
+        chunks.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(chunks)
+
+        params = {"pageSize": "50", "pageNumber": str(api_page), "text": "***", "apiKey": "SEDIA"}
+        url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(url, content=body, headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
+                "Origin": "https://ec.europa.eu",
+            })
+
+        if r.status_code != 200:
+            break
+
+        data = r.json()
+        hits = data.get("results") or []
+        total = data.get("totalResults") or 0
+
+        for hit in hits:
+            meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
+            ident_raw = meta.get("identifier") or []
+            tid = (ident_raw[0] if isinstance(ident_raw, list) and ident_raw else str(ident_raw)).strip().upper()
+            if not tid or tid in seen_ids:
+                continue
+            seen_ids.add(tid)
+            if prog_upper and not tid.startswith(prog_upper + "-"):
+                continue
+            all_topics.append(tid)
+
+        if not hits or len(hits) < 50 or len(all_topics) >= total:
+            break
+        api_page += 1
+
+    # Group by cluster (second segment of topic_id)
+    # HORIZON-CL3-... → CL3
+    # HORIZON-INFRA-... → INFRA
+    # HORIZON-EIC-... → EIC
+    # HORIZON-MSCA-... → MSCA
+    # HORIZON-JU-... → JU (Joint Undertakings)
+    cluster_counts = defaultdict(int)
+    cluster_topics = defaultdict(list)
+
+    for tid in all_topics:
+        parts = tid.split("-")
+        # parts[0] = programme, parts[1] = cluster/area
+        cluster = parts[1] if len(parts) > 1 else "OTHER"
+        cluster_counts[cluster] += 1
+        if len(cluster_topics[cluster]) < 3:
+            cluster_topics[cluster].append(tid)
+
+    # Build result sorted by count
+    breakdown = sorted(
+        [{"cluster": k, "count": v, "examples": cluster_topics[k]}
+         for k, v in cluster_counts.items()],
+        key=lambda x: -x["count"]
+    )
+
+    # Add human-readable labels
+    CLUSTER_LABELS = {
+        "CL1": "Cluster 1 - Health",
+        "CL2": "Cluster 2 - Culture, Creativity & Inclusive Society",
+        "CL3": "Cluster 3 - Civil Security for Society",
+        "CL4": "Cluster 4 - Digital, Industry & Space",
+        "CL5": "Cluster 5 - Climate, Energy & Mobility",
+        "CL6": "Cluster 6 - Food, Bioeconomy, Natural Resources",
+        "EIC": "EIC - European Innovation Council",
+        "ERC": "ERC - European Research Council",
+        "MSCA": "MSCA - Marie Skłodowska-Curie Actions",
+        "INFRA": "Research Infrastructures",
+        "JU": "Joint Undertakings",
+        "WIDERA": "Widening Participation",
+        "CID": "Clean Industrial Deal",
+        "EURATOM": "Euratom",
+    }
+
+    for item in breakdown:
+        item["label"] = CLUSTER_LABELS.get(item["cluster"], item["cluster"])
+
+    return {
+        "programme": programme,
+        "status_filter": status,
+        "total_calls": len(all_topics),
+        "clusters": breakdown,
+    }
+
+
 @app.get("/debug-types")
 async def debug_types():
     """Fetch all open calls and return unique typeOfMGAs IDs with examples."""
