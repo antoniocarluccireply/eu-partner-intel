@@ -1766,6 +1766,7 @@ async def get_partner_contacts(
     }
 
 
+@app.get("/kb-partners")
 async def kb_partners_list(
     country: str = Query("", description="Filtra per paese: UK, IT, NO, AT"),
     name: str = Query("", description="Cerca per nome organizzazione (parziale)"),
