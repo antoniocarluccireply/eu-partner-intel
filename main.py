@@ -925,10 +925,11 @@ async def search_calls(
             _topic_lower = topic_id.lower()
 
             if kw_tokens:
-                _in_topic = all(tok in _topic_lower for tok in kw_tokens)
-                _in_title = all(tok in _title_lower for tok in kw_tokens)
-                _in_kw    = all(tok in _kw_lower for tok in kw_tokens)
-                _in_desc  = bool(_desc_lower) and all(tok in _desc_lower for tok in kw_tokens)
+                _kw_tokens_lower = [tok.lower() for tok in kw_tokens]
+                _in_topic = all(tok in _topic_lower for tok in _kw_tokens_lower)
+                _in_title = all(tok in _title_lower for tok in _kw_tokens_lower)
+                _in_kw    = all(tok in _kw_lower for tok in _kw_tokens_lower)
+                _in_desc  = bool(_desc_lower) and all(tok in _desc_lower for tok in _kw_tokens_lower)
                 if _in_topic: _match_parts.append("topic_id")
                 if _in_title and not _in_topic: _match_parts.append("title")
                 if _in_kw: _match_parts.append("keywords")
@@ -1197,6 +1198,107 @@ async def debug_types():
         "unknown_ids": unknown,
         "known_ids": known,
     }
+
+
+@app.get("/debug-description")
+async def debug_description(
+    topic_id: str = Query(..., description="Es: HORIZON-CL3-2026-02-CS-ECCC-01"),
+):
+    """Dump raw descriptionByte to understand encoding format."""
+    import uuid as _uuid
+    import urllib.parse as _urlparse
+    import json as _json
+    import base64 as _b64
+    import gzip as _gzip
+    import zlib as _zlib
+
+    query_obj     = {"bool": {"must": [
+        {"terms": {"type": ["1"]}},
+        {"terms": {"status": ["31094502", "31094501"]}},
+    ]}}
+    languages_obj = ["en"]
+    sort_obj      = [{"field": "identifier", "order": "ASC"}]
+
+    hit = None
+    for page in range(1, 20):
+        boundary = f"----euft-{_uuid.uuid4().hex}"
+        chunks = []
+        for fname, (fn, fval, fct) in {
+            "query":     ("blob", _json.dumps(query_obj),     "application/json"),
+            "languages": ("blob", _json.dumps(languages_obj), "application/json"),
+            "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
+        }.items():
+            chunks.append(f"--{boundary}\r\n".encode())
+            chunks.append(f'Content-Disposition: form-data; name="{fname}"; filename="{fn}"\r\nContent-Type: {fct}\r\n\r\n'.encode())
+            chunks.append(fval.encode())
+            chunks.append(b"\r\n")
+        chunks.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(chunks)
+        params = {"pageSize": "50", "pageNumber": str(page), "text": "***", "apiKey": "SEDIA"}
+        url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(url, content=body, headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json", "Origin": "https://ec.europa.eu",
+            })
+        if r.status_code != 200: break
+        data = r.json()
+        hits = data.get("results") or []
+        for h in hits:
+            meta = h.get("metadata", {}) if isinstance(h.get("metadata"), dict) else {}
+            ident_raw = meta.get("identifier") or []
+            tid = (ident_raw[0] if isinstance(ident_raw, list) and ident_raw else "").strip().upper()
+            if tid == topic_id.upper():
+                hit = h
+                break
+        if hit or len(hits) < 50: break
+
+    if not hit:
+        return JSONResponse(status_code=404, content={"error": f"Topic {topic_id} not found"})
+
+    meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
+    desc_byte_raw = meta.get("descriptionByte") or []
+    desc_byte_str = (desc_byte_raw[0] if isinstance(desc_byte_raw, list) and desc_byte_raw else "").strip()
+
+    if not desc_byte_str:
+        return {"error": "No descriptionByte field"}
+
+    results = {"b64_length": len(desc_byte_str), "b64_preview": desc_byte_str[:100]}
+
+    try:
+        raw = _b64.b64decode(desc_byte_str + "==")
+        results["raw_length"] = len(raw)
+        results["raw_hex_start"] = raw[:20].hex()
+        results["raw_bytes_start"] = list(raw[:20])
+
+        # Try each decompression
+        for method_name, decomp in [
+            ("gzip", lambda b: _gzip.decompress(b)),
+            ("zlib", lambda b: _zlib.decompress(b)),
+            ("zlib_raw", lambda b: _zlib.decompress(b, -15)),
+            ("zlib_gzip", lambda b: _zlib.decompress(b, 47)),
+            ("none", lambda b: b),
+        ]:
+            try:
+                out = decomp(raw)
+                decoded = out.decode("utf-8", errors="replace")
+                results[f"attempt_{method_name}"] = {
+                    "success": True,
+                    "length": len(decoded),
+                    "preview": decoded[:300],
+                    "has_html": "<" in decoded,
+                    "has_expected": "Expected" in decoded or "Scope" in decoded,
+                }
+                if results[f"attempt_{method_name}"]["has_html"] or results[f"attempt_{method_name}"]["has_expected"]:
+                    results["winning_method"] = method_name
+                    results["full_text_preview"] = decoded[:1000]
+                    break
+            except Exception as e:
+                results[f"attempt_{method_name}"] = {"success": False, "error": str(e)[:100]}
+    except Exception as e:
+        results["decode_error"] = str(e)
+
+    return results
 
 
 @app.get("/debug-budget")
