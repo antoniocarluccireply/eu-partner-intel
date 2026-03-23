@@ -890,24 +890,26 @@ async def search_calls(
                 try:
                     _full_text = _strip_html(desc_byte_str2)
                     _outcome = _re_desc.search(
-                        r"Expected Outcome[^:]*:(.{150,5000}?)(?:Scope[^:]*:|$)",
+                        r"Expected Outcome[^:]*:(.{50,10000}?)(?:Scope[^:]*:|$)",
                         _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE
                     )
                     _scope = _re_desc.search(
-                        r"Scope[^:]*:(.{150,5000}?)(?:Expected Outcome|Proposals should|$)",
+                        r"Scope[^:]*:(.{50,10000}?)(?:Expected Outcome|Proposals should|$)",
                         _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE
                     )
-                    if _outcome:
-                        description = _outcome.group(1).strip()[:3000]
-                    elif _scope:
-                        description = _scope.group(1).strip()[:3000]
+                    # Combine Expected Outcome + Scope for maximum content
+                    _parts = []
+                    if _outcome: _parts.append(_outcome.group(1).strip())
+                    if _scope: _parts.append("Scope: " + _scope.group(1).strip())
+                    if _parts:
+                        description = " ".join(_parts)[:10000]
                     else:
                         _paras = [p.strip() for p in _full_text.split("  ")
                                   if len(p.strip()) > 100
                                   and "Admissibility" not in p
                                   and "Annex" not in p
                                   and "portal.ec" not in p]
-                        description = " ".join(_paras[:3])[:3000] if _paras else ""
+                        description = " ".join(_paras[:5])[:10000] if _paras else ""
                 except Exception:
                     pass
             if not description:
@@ -1250,13 +1252,13 @@ async def search_calls(
                     if desc_byte_str3:
                         try:
                             _full_text3 = _strip_html(desc_byte_str3)
-                            _outcome3 = _re_desc2.search(r"Expected Outcome[^:]*:(.{150,5000}?)(?:Scope[^:]*:|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
-                            _scope3 = _re_desc2.search(r"Scope[^:]*:(.{150,5000}?)(?:Expected Outcome|Proposals should|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
-                            if _outcome3: description = _outcome3.group(1).strip()[:3000]
-                            elif _scope3: description = _scope3.group(1).strip()[:3000]
+                            _outcome3 = _re_desc2.search(r"Expected Outcome[^:]*:(.{50,10000}?)(?:Scope[^:]*:|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
+                            _scope3 = _re_desc2.search(r"Scope[^:]*:(.{50,10000}?)(?:Expected Outcome|Proposals should|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
+                            if _outcome3: description = _outcome3.group(1).strip()[:10000]
+                            elif _scope3: description = _scope3.group(1).strip()[:10000]
                             else:
                                 _paras3 = [p.strip() for p in _full_text3.split("  ") if len(p.strip())>100 and "Admissibility" not in p and "Annex" not in p and "portal.ec" not in p]
-                                description = " ".join(_paras3[:3])[:3000] if _paras3 else ""
+                                description = " ".join(_paras3[:5])[:10000] if _paras3 else ""
                         except Exception:
                             pass
                     if not description:
