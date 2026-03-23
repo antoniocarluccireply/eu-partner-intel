@@ -1056,7 +1056,9 @@ async def search_calls(
             "railway": "transport",
             "aviation": "transport",
             # Data / Digital
+            "spaces": "sharing",
             "data": "digital",
+            "sharing": "interoperability",
             "interoperability": "data",
             "cloud": "digital",
             "edge": "computing",
