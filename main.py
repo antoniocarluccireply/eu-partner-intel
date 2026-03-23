@@ -720,19 +720,19 @@ async def search_calls(
             else:
                 budget_meur = ""
 
-            # TRL: extract from description or topic_conditions
-            trl = ""
+            # Description and programme division
+            description = _strip_html(_euft_extract_description(hit, meta))
+            prog_division_raw = _euft_extract_programme_division(meta)
+            prog_division = PROG_DIVISION_MAP.get(prog_division_raw, prog_division_raw)
+
+            # TRL: extract from description or topic_conditions (after description is defined)
             import re as _re_trl
+            trl = ""
             for src in [description, " ".join(topic_conditions)]:
                 m = _re_trl.search(r"TRL\s*([3-9]|[3-9]\s*[-–]\s*[4-9])", src or "", _re_trl.IGNORECASE)
                 if m:
                     trl = "TRL " + m.group(1).replace(" ", "")
                     break
-
-            # Description and programme division
-            description = _strip_html(_euft_extract_description(hit, meta))
-            prog_division_raw = _euft_extract_programme_division(meta)
-            prog_division = PROG_DIVISION_MAP.get(prog_division_raw, prog_division_raw)
 
             status_val = "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming"
 
