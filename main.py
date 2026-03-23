@@ -890,11 +890,11 @@ async def search_calls(
                 try:
                     _full_text = _strip_html(desc_byte_str2)
                     _outcome = _re_desc.search(
-                        r"Expected Outcome[^:]*:(.{150,1200}?)(?:Scope[^:]*:|$)",
+                        r"Expected Outcome[^:]*:(.{150,5000}?)(?:Scope[^:]*:|$)",
                         _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE
                     )
                     _scope = _re_desc.search(
-                        r"Scope[^:]*:(.{150,1200}?)(?:Expected Outcome|Proposals should|$)",
+                        r"Scope[^:]*:(.{150,5000}?)(?:Expected Outcome|Proposals should|$)",
                         _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE
                     )
                     if _outcome:
@@ -1250,8 +1250,8 @@ async def search_calls(
                     if desc_byte_str3:
                         try:
                             _full_text3 = _strip_html(desc_byte_str3)
-                            _outcome3 = _re_desc2.search(r"Expected Outcome[^:]*:(.{150,1200}?)(?:Scope[^:]*:|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
-                            _scope3 = _re_desc2.search(r"Scope[^:]*:(.{150,1200}?)(?:Expected Outcome|Proposals should|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
+                            _outcome3 = _re_desc2.search(r"Expected Outcome[^:]*:(.{150,5000}?)(?:Scope[^:]*:|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
+                            _scope3 = _re_desc2.search(r"Scope[^:]*:(.{150,5000}?)(?:Expected Outcome|Proposals should|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
                             if _outcome3: description = _outcome3.group(1).strip()[:3000]
                             elif _scope3: description = _scope3.group(1).strip()[:3000]
                             else:
