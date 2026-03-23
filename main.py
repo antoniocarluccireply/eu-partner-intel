@@ -1710,7 +1710,20 @@ async def debug_types():
     }
 
 
-@app.get("/debug-description")
+@app.get("/kb-partners")
+async def kb_partners_trigger():
+    """
+    Endpoint trigger per la ricerca partner nella KB di EU Partners.
+    Restituisce istruzioni per l'agente su come cercare nella KB.
+    """
+    return {
+        "action": "search_kb",
+        "instruction": "Cerca nella Knowledge Base con query 'partner organizzazione' e restituisci la lista completa dei partner noti ad Adeptic Reply con nome, paese, tipo organizzazione e capabilities.",
+        "query_suggestion": "partner organizzazione capabilities",
+        "note": "La KB è interna all'agente EU Partners — usa lo strumento di ricerca KB con la query suggerita."
+    }
+
+
 async def debug_description(
     topic_id: str = Query(..., description="Es: HORIZON-CL3-2026-02-CS-ECCC-01"),
 ):
