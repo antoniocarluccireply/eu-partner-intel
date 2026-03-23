@@ -360,41 +360,68 @@ def _euft_actions(md):
     return []
 
 def _euft_extract_budget(md, topic_id):
-    """Extract min_meur, max_meur from budgetOverview or actions."""
+    """Extract min_meur, max_meur from budgetOverview or actions.
+    
+    Strategy:
+    1. Try exact topic_id match in budgetTopicActionMap
+    2. If not found or budget seems per-topic (very small), sum all entries in the call
+    3. Fallback to actions expectedGrant
+    """
     min_meur = None
     max_meur = None
 
-    # Try budgetOverview -> budgetTopicActionMap
     for overview in _euft_budget_overviews(md):
         topic_map = overview.get("budgetTopicActionMap")
         if not isinstance(topic_map, dict): continue
+
+        # Collect ALL entries across all topic_ids in this call
+        all_entries = []
+        matched_entry = None
+
         for _tid, entries in topic_map.items():
             if not isinstance(entries, list): continue
             for entry in entries:
                 if not isinstance(entry, dict): continue
+                all_entries.append(entry)
                 action_full = str(entry.get("action") or "").strip()
                 action_code = action_full.split(" - ", 1)[0].strip()
-                # Match if action_code matches topic_id or is substring
                 if topic_id and action_code and (
                     action_code == topic_id or
                     topic_id.startswith(action_code + "-") or
                     action_code.startswith(topic_id + "-")
-                ) or not topic_id:
-                    mn = _euft_safe_float(entry.get("minContribution"))
-                    mx = _euft_safe_float(entry.get("maxContribution"))
-                    if mn is not None: min_meur = mn / 1_000_000
-                    if mx is not None: max_meur = mx / 1_000_000
-                    # Try budgetYearMap for 2026
-                    if not min_meur and not max_meur:
-                        bym = entry.get("budgetYearMap")
-                        if isinstance(bym, dict):
-                            for yr in ["2026", "2025", "2027"]:
-                                yval = _euft_safe_float(bym.get(yr))
-                                if yval:
-                                    min_meur = max_meur = yval / 1_000_000
-                                    break
-                    if min_meur is not None or max_meur is not None:
-                        return min_meur, max_meur
+                ):
+                    matched_entry = entry
+
+        # Try matched entry first
+        entry_to_use = matched_entry or (all_entries[0] if all_entries else None)
+        if entry_to_use:
+            mn = _euft_safe_float(entry_to_use.get("minContribution"))
+            mx = _euft_safe_float(entry_to_use.get("maxContribution"))
+            if mn is not None: min_meur = mn / 1_000_000
+            if mx is not None: max_meur = mx / 1_000_000
+
+            # Try budgetYearMap
+            if not min_meur and not max_meur:
+                bym = entry_to_use.get("budgetYearMap")
+                if isinstance(bym, dict):
+                    for yr in ["2026", "2025", "2027", "2024"]:
+                        yval = _euft_safe_float(bym.get(yr))
+                        if yval:
+                            min_meur = max_meur = yval / 1_000_000
+                            break
+
+            # If budget found but seems per-topic (< 20M for Horizon), 
+            # try summing all entries to get call-level budget
+            if min_meur is not None and min_meur < 20 and len(all_entries) > 1 and not matched_entry:
+                total = 0
+                for e in all_entries:
+                    mx_e = _euft_safe_float(e.get("maxContribution"))
+                    if mx_e: total += mx_e / 1_000_000
+                if total > min_meur:
+                    min_meur = max_meur = total
+
+            if min_meur is not None or max_meur is not None:
+                return min_meur, max_meur
 
     # Fallback: actions -> expectedGrant
     for action in _euft_actions(md):
@@ -444,25 +471,36 @@ def _strip_html(text):
 
 # SEDIA type_of_action numeric ID -> human readable
 TYPE_OF_ACTION_MAP = {
-    "44175699": "DA",        # Development Action
-    "44175700": "RIA",       # Research & Innovation Action
-    "44175701": "IA",        # Innovation Action
-    "44175702": "CSA",       # Coordination & Support Action
-    "44175703": "COFUND",    # COFUND
-    "44175704": "ERC",       # ERC
-    "44175705": "MSCA",      # MSCA
-    "44175706": "PCP",       # Pre-commercial Procurement
-    "44175707": "PPI",       # Public Procurement of Innovative Solutions
-    "44175708": "ERA-NET",   # ERA-NET
-    "44175709": "RA",        # Research Action (EDF)
-    "44175710": "SME",       # SME Instrument
-    "44175711": "PRIZE",     # Prize
-    "44175712": "LUMP",      # Lump Sum
+    # EDF
+    "44175699": "DA",
+    "44175709": "RA",
+    # Horizon Europe (confirmed from portal)
+    "43027846": "IA",        # Innovation Action
+    "43027847": "RIA",       # Research & Innovation Action
+    "43027848": "RIA",
+    "43027849": "CSA",       # Coordination & Support Action
+    "43027850": "COFUND",
+    "43027851": "ERC",
+    "43027852": "MSCA",
+    "43027853": "PRIZE",
+    "43027854": "PCP",
+    "43027855": "PPI",
+    "43027856": "IA",
+    "43027857": "LUMP",
+    # Legacy codes
     "31094902": "RIA",
     "31094903": "IA",
     "31094904": "CSA",
     "31094905": "COFUND",
     "31094906": "ERC",
+    "44175700": "RIA",
+    "44175701": "IA",
+    "44175702": "CSA",
+    "44175703": "COFUND",
+    "44175704": "ERC",
+    "44175710": "SME",
+    "44175711": "PRIZE",
+    "44175712": "LUMP",
 }
 
 # SEDIA programme_division numeric ID -> human readable (partial)
@@ -615,15 +653,21 @@ async def search_calls(
 
             call_title      = _first(meta.get("callTitle"))
             type_raw = _first(meta.get("typeOfMGAs"))
-            type_of_action = TYPE_OF_ACTION_MAP.get(type_raw, type_raw)
+            type_of_action = TYPE_OF_ACTION_MAP.get(type_raw, "")
             # EDF: refine DA vs RA from call_id pattern
-            if type_of_action == "DA" and call_id:
-                if "-RA-" in call_id or call_id.endswith("-RA"):
+            if type_of_action in ("DA", "") and call_id:
+                if "-RA-" in call_id or call_id.endswith("-RA") or "-LS-RA-" in call_id:
                     type_of_action = "RA"
                 elif "-DA-" in call_id or call_id.endswith("-DA"):
                     type_of_action = "DA"
-                elif "-LS-RA-" in call_id:
-                    type_of_action = "RA"
+            # Fallback: extract from title (e.g. "Open Internet Stack (RIA)")
+            if not type_of_action or type_of_action == type_raw:
+                import re as _re_type
+                m = _re_type.search(r"\((RIA|IA|CSA|COFUND|PRIZE|ERC|MSCA|DA|RA|PCP|PPI)\)", title or "")
+                if m:
+                    type_of_action = m.group(1)
+            if not type_of_action:
+                type_of_action = type_raw or ""
             keywords_raw    = meta.get("keywords") or []
             keywords_list   = [
                 str(k).strip() for k in keywords_raw
@@ -667,12 +711,23 @@ async def search_calls(
 
             # Budget extraction
             min_meur, max_meur = _euft_extract_budget(meta, topic_id)
-            if max_meur is not None:
-                budget_meur = f"{max_meur:.1f}M EUR"
+            if max_meur is not None and min_meur is not None and min_meur != max_meur:
+                budget_meur = f"{min_meur:.1f}-{max_meur:.1f}M EUR/progetto"
+            elif max_meur is not None:
+                budget_meur = f"{max_meur:.1f}M EUR/progetto"
             elif min_meur is not None:
-                budget_meur = f"{min_meur:.1f}M EUR"
+                budget_meur = f"{min_meur:.1f}M EUR/progetto"
             else:
                 budget_meur = ""
+
+            # TRL: extract from description or topic_conditions
+            trl = ""
+            import re as _re_trl
+            for src in [description, " ".join(topic_conditions)]:
+                m = _re_trl.search(r"TRL\s*([3-9]|[3-9]\s*[-–]\s*[4-9])", src or "", _re_trl.IGNORECASE)
+                if m:
+                    trl = "TRL " + m.group(1).replace(" ", "")
+                    break
 
             # Description and programme division
             description = _strip_html(_euft_extract_description(hit, meta))
@@ -700,6 +755,7 @@ async def search_calls(
                 "programme_period":   prog_period,
                 "topic_conditions":   topic_conditions,
                 "ccm2id":             ccm2id,
+                "trl":                trl,
                 "portal_url":         f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}",
                 "primary_url":        primary_url,
                 "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}",
@@ -829,6 +885,92 @@ async def list_programmes(
         "status_filter": status,
         "total_calls":   len(all_identifiers),
         "programmes":    programmes,
+    }
+
+
+@app.get("/debug-budget")
+async def debug_budget(
+    topic_id: str = Query(..., description="Es: HORIZON-CL4-2026-04-DATA-06"),
+):
+    """Dump raw budgetOverview, typeOfMGAs, actions and all metadata for a topic."""
+    import uuid as _uuid
+    import urllib.parse as _urlparse
+    import json as _json
+
+    query_obj     = {"bool": {"must": [
+        {"terms": {"type": ["1"]}},
+        {"terms": {"status": ["31094502", "31094501"]}},
+    ]}}
+    languages_obj = ["en"]
+    sort_obj      = [{"field": "identifier", "order": "ASC"}]
+
+    boundary = f"----euft-{_uuid.uuid4().hex}"
+    chunks = []
+    for fname, (fn, fval, fct) in {
+        "query":     ("blob", _json.dumps(query_obj),     "application/json"),
+        "languages": ("blob", _json.dumps(languages_obj), "application/json"),
+        "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
+    }.items():
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(f'Content-Disposition: form-data; name="{fname}"; filename="{fn}"\r\nContent-Type: {fct}\r\n\r\n'.encode())
+        chunks.append(fval.encode())
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(chunks)
+
+    params = {"pageSize": "50", "pageNumber": "1", "text": "***", "apiKey": "SEDIA"}
+    url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
+
+    # Search all pages for the topic
+    hit = None
+    for page in range(1, 20):
+        params["pageNumber"] = str(page)
+        url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(url, content=body, headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
+                "Origin": "https://ec.europa.eu",
+            })
+        if r.status_code != 200:
+            break
+        data = r.json()
+        hits = data.get("results") or []
+        for h in hits:
+            meta = h.get("metadata", {}) if isinstance(h.get("metadata"), dict) else {}
+            ident_raw = meta.get("identifier") or []
+            tid = (ident_raw[0] if isinstance(ident_raw, list) and ident_raw else "").strip().upper()
+            if tid == topic_id.upper():
+                hit = h
+                break
+        if hit or len(hits) < 50:
+            break
+
+    if not hit:
+        return JSONResponse(status_code=404, content={"error": f"Topic {topic_id} not found"})
+
+    meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
+
+    # Parse budgetOverview
+    budget_overview_raw = meta.get("budgetOverview")
+    budget_overview_parsed = _euft_safe_json(budget_overview_raw) if budget_overview_raw else None
+
+    # Parse actions
+    actions_raw = meta.get("actions")
+    actions_parsed = _euft_safe_json(actions_raw) if actions_raw else None
+
+    return {
+        "topic_id": topic_id,
+        "ALL_META_KEYS": sorted(meta.keys()),
+        "typeOfMGAs": meta.get("typeOfMGAs"),
+        "programmeDivision": meta.get("programmeDivision"),
+        "focusArea": meta.get("focusArea"),
+        "topicConditions_raw": (meta.get("topicConditions") or [])[:1],
+        "budgetOverview_parsed": budget_overview_parsed,
+        "actions_parsed": actions_parsed,
+        "identifier": meta.get("identifier"),
+        "callIdentifier": meta.get("callIdentifier"),
+        "callTitle": meta.get("callTitle"),
     }
 
 
