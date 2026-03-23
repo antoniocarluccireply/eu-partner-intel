@@ -501,6 +501,40 @@ TYPE_OF_ACTION_MAP = {
     "44175710": "SME",
     "44175711": "PRIZE",
     "44175712": "LUMP",
+    # Programme-specific types (confirmed from /debug-types)
+    "43080006": "Grant",          # INNOVFUND - Large/Medium Scale Projects
+    "43140990": "Deployment",     # DIGITAL Europe - Deployment/Best Use
+    "43246967": "Grant",          # AGRIP - Agricultural promotion
+    "43249539": "Works/Studies",  # CEF Digital - Infrastructure works
+    "43249821": "Action Grant",   # CERV - Citizens engagement
+    "43249881": "Grant",          # CREA - Creative Europe networks
+    "43249888": "Grant",          # CREA - Creative Europe cooperation
+    "43250003": "TA Grant",       # EUAF - Technical Assistance
+    "43250150": "Action Grant",   # ISF - Internal Security Fund
+    "43250244": "Action Grant",   # JUST - Justice programme
+    "43250350": "Grant",          # PERI - Euro protection
+    "43250365": "RIA",            # RFCS - Research Fund Coal & Steel
+    "43250793": "Grant",          # SMP - Single Market Programme
+    "43251093": "Grant",          # SOCPL - Social dialogue
+    "43251282": "Grant",          # UCPM - Civil Protection
+    "43251971": "MSCA",           # HORIZON MSCA - COFUND/DN
+    "43252078": "Grant",          # RENEWFM - Renewable energy financing
+    "43252140": "Grant",          # ESF - EURES mobility
+    "43252184": "RIA",            # EURATOM - Research actions
+    "43252207": "Grant",          # ESC - Volunteering humanitarian
+    "43252213": "Quality Label",  # ESC - Erasmus quality label
+    "43341839": "Capacity Building", # ERASMUS - CB international
+    "43341854": "Certification",  # ERASMUS - ECHE
+    "43391809": "Grant",          # EMFAF - Maritime spatial planning
+    "43567892": "PRIZE",          # HORIZON - Prize
+    "43694065": "Subsidy",        # EP - Conference interpreting
+    "44237927": "PRIZE",          # EURATOM - SOFT Prize
+    "44772026": "Loan",           # JTM - Framework loans
+    "45095551": "DA-LS",          # EDF - Large Scale Development Actions
+    "45530684": "Service",        # EUBA - Service contracts
+    "46509227": "Grant",          # ED - Europe Direct
+    "47421168": "Prep Action",    # PPPA - Preparatory actions
+    "47452399": "EIC Scale-Up",   # EIC STEP Scale Up
 }
 
 # SEDIA programme_division numeric ID -> human readable (partial)
