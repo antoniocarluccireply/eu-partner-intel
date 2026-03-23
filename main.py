@@ -1553,6 +1553,10 @@ async def breakdown_by_cluster(
         "WIDERA": "Widening Participation",
         "CID": "Clean Industrial Deal",
         "EURATOM": "Euratom",
+        "HLTH": "Cluster 1 - Health",
+        "MISS": "EU Missions",
+        "RAISE": "RAISE - Regional AI Support Ecosystem",
+        "EUROHPC": "EuroHPC Joint Undertaking",
     }
 
     for item in breakdown:
