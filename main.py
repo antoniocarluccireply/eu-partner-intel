@@ -475,10 +475,10 @@ TYPE_OF_ACTION_MAP = {
     "44175699": "DA",
     "44175709": "RA",
     # Horizon Europe (confirmed from portal)
-    "43027846": "IA",        # Innovation Action
-    "43027847": "RIA",       # Research & Innovation Action
-    "43027848": "RIA",
-    "43027849": "CSA",       # Coordination & Support Action
+    "43027846": "RIA",       # Research & Innovation Action
+    "43027847": "IA",        # Innovation Action
+    "43027848": "CSA",       # Coordination & Support Action
+    "43027849": "RIA",       # confirmed: HORIZON-CL3-2026-02-CS-ECCC-01
     "43027850": "COFUND",
     "43027851": "ERC",
     "43027852": "MSCA",
