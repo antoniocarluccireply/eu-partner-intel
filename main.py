@@ -432,16 +432,27 @@ def _euft_extract_budget(md, topic_id):
     return None, None
 
 def _euft_extract_description(root, md):
-    """Extract description/destination from SEDIA hit."""
+    """Extract description/destination from SEDIA hit. Strip HTML before truncating."""
+    import html as _html_mod2
+    import re as _re2
+
+    def _clean(raw):
+        if not raw: return ""
+        decoded = _html_mod2.unescape(str(raw))
+        clean = _re2.sub(r"<[^>]+>", " ", decoded)
+        clean = _re2.sub(r"\s+", " ", clean).strip()
+        clean = _re2.sub(r'^["->\s]+', "", clean).strip()
+        return clean
+
     dest = (
-        _euft_first_text(root.get("destinationDescription")) or
-        _euft_first_text(root.get("destinationGroup")) or
-        _euft_first_text(md.get("destinationDescription")) or
-        _euft_first_text(md.get("destinationGroup")) or
-        _euft_first_text(md.get("topicConditions")) or
+        _clean(_euft_first_text(root.get("destinationDescription"))) or
+        _clean(_euft_first_text(root.get("destinationGroup"))) or
+        _clean(_euft_first_text(md.get("destinationDescription"))) or
+        _clean(_euft_first_text(md.get("destinationGroup"))) or
+        _clean(_euft_first_text(md.get("topicConditions"))) or
         ""
     )
-    return dest[:500] if dest else ""
+    return dest[:300] if dest else ""
 
 def _euft_extract_programme_division(md):
     """Extract programme division / focus area."""
@@ -539,10 +550,30 @@ TYPE_OF_ACTION_MAP = {
 
 # SEDIA programme_division numeric ID -> human readable (partial)
 PROG_DIVISION_MAP = {
-    "44181033": "EDF-DA",     # EDF Development Actions
-    "44181034": "EDF-RA",     # EDF Research Actions
+    "44181033": "EDF-DA",
+    "44181034": "EDF-RA",
     "43298664": "AGRIP",
     "43251814": "CREA-MEDIA",
+    # Horizon Europe clusters
+    "43108390": "CL3 - Civil Security",
+    "43108541": "CL3 - Critical Infrastructure",
+    "43118971": "CL3 - Disaster Resilience",
+    "43120185": "CL3 - Border Management",
+    "43108392": "CL4 - Digital",
+    "43108393": "CL4 - AI & Robotics",
+    "43108394": "CL4 - Advanced Computing",
+    "43108395": "CL4 - Data Spaces",
+    "43108396": "CL5 - Energy",
+    "43108397": "CL5 - Climate",
+    "43108398": "CL5 - Mobility",
+    "43108399": "CL6 - Food & Bioeconomy",
+    "43108400": "CL1 - Health",
+    "43108401": "CL2 - Society",
+    "43108402": "MSCA",
+    "43108403": "ERC",
+    "43108404": "INFRA",
+    "43108405": "EIC",
+    "43108406": "WIDERA",
 }
 
 # ---- End helpers ----
