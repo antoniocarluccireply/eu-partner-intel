@@ -686,20 +686,51 @@ async def search_calls(
                 return default
 
             call_title      = _first(meta.get("callTitle"))
-            type_raw = _first(meta.get("typeOfMGAs"))
-            type_of_action = TYPE_OF_ACTION_MAP.get(type_raw, "")
-
-            # Best source: callTitle contains "HORIZON-RIA", "HORIZON-IA", "HORIZON-CSA" etc.
             import re as _re_type
-            ct = call_title or ""
-            m_ct = _re_type.search(r"HORIZON-?(RIA|IA|CSA|COFUND|ERC|MSCA|PRIZE|PCP|PPI|LUMP)", ct, _re_type.IGNORECASE)
-            if m_ct:
-                type_of_action = m_ct.group(1).upper()
-            elif not type_of_action:
-                # Fallback: extract from topic title (e.g. "Open Internet Stack (RIA)")
-                m = _re_type.search(r"\((RIA|IA|CSA|COFUND|PRIZE|ERC|MSCA|DA|RA|PCP|PPI)\)", title or "")
-                if m:
-                    type_of_action = m.group(1)
+
+            # BEST SOURCE: budgetOverview action string for this topic_id
+            # e.g. "HORIZON-CL3-2026-02-CS-ECCC-02 - HORIZON-IA HORIZON Innovation Actions"
+            type_of_action = ""
+            for _ov in _euft_budget_overviews(meta):
+                _tm = _ov.get("budgetTopicActionMap")
+                if not isinstance(_tm, dict): continue
+                for _tid2, _entries in _tm.items():
+                    if not isinstance(_entries, list): continue
+                    for _entry in _entries:
+                        if not isinstance(_entry, dict): continue
+                        _af = str(_entry.get("action") or "").strip()
+                        _ac = _af.split(" - ", 1)[0].strip()
+                        if _ac == topic_id:
+                            # action string after " - " contains type
+                            _rest = _af.split(" - ", 1)[1] if " - " in _af else ""
+                            _m = _re_type.search(r"HORIZON-?(RIA|IA|CSA|COFUND|ERC|MSCA|PRIZE|PCP|PPI|LUMP)", _rest, _re_type.IGNORECASE)
+                            if _m:
+                                type_of_action = _m.group(1).upper()
+                            break
+                    if type_of_action: break
+                if type_of_action: break
+
+            # Fallback: actions[*].types[*].typeOfAction
+            if not type_of_action:
+                for _action in _euft_actions(meta):
+                    for _t in (_action.get("types") or []):
+                        _toa = str(_t.get("typeOfAction") or "")
+                        _m = _re_type.search(r"HORIZON-?(RIA|IA|CSA|COFUND|ERC|MSCA|PRIZE|PCP|PPI|LUMP)", _toa, _re_type.IGNORECASE)
+                        if _m:
+                            type_of_action = _m.group(1).upper()
+                            break
+                    if type_of_action: break
+
+            # Fallback: typeOfMGAs map
+            if not type_of_action:
+                type_raw = _first(meta.get("typeOfMGAs"))
+                type_of_action = TYPE_OF_ACTION_MAP.get(type_raw, "")
+
+            # Fallback: topic title "(RIA)" or "(IA)"
+            if not type_of_action:
+                _m = _re_type.search(r"\((RIA|IA|CSA|COFUND|PRIZE|ERC|MSCA|DA|RA|PCP|PPI)\)", title or "")
+                if _m:
+                    type_of_action = _m.group(1)
 
             # EDF: refine DA vs RA from call_id pattern
             if type_of_action in ("DA", "") and call_id:
@@ -707,9 +738,6 @@ async def search_calls(
                     type_of_action = "RA"
                 elif "-DA-" in call_id or call_id.endswith("-DA"):
                     type_of_action = "DA"
-
-            if not type_of_action:
-                type_of_action = type_raw or ""
             keywords_raw    = meta.get("keywords") or []
             keywords_list   = [
                 str(k).strip() for k in keywords_raw
@@ -797,14 +825,29 @@ async def search_calls(
             prog_division_raw = _euft_extract_programme_division(meta)
             prog_division = PROG_DIVISION_MAP.get(prog_division_raw, prog_division_raw)
 
-            # TRL: extract from description or topic_conditions (after description is defined)
+            # TRL: extract from descriptionByte (base64 full topic HTML) or topic_conditions
             import re as _re_trl
+            import base64 as _b64
             trl = ""
-            for src in [description, " ".join(topic_conditions)]:
-                m = _re_trl.search(r"TRL\s*([3-9]|[3-9]\s*[-–]\s*[4-9])", src or "", _re_trl.IGNORECASE)
-                if m:
-                    trl = "TRL " + m.group(1).replace(" ", "")
-                    break
+            # Try descriptionByte first (full topic description)
+            desc_byte_raw = meta.get("descriptionByte") or []
+            desc_byte_str = (desc_byte_raw[0] if isinstance(desc_byte_raw, list) and desc_byte_raw else "").strip()
+            if desc_byte_str:
+                try:
+                    decoded_html = _b64.b64decode(desc_byte_str).decode("utf-8", errors="replace")
+                    decoded_text = _strip_html(decoded_html)
+                    m_trl = _re_trl.search(r"TRL\s*([3-9](?:\s*[-–]\s*[4-9])?)", decoded_text, _re_trl.IGNORECASE)
+                    if m_trl:
+                        trl = "TRL " + m_trl.group(1).replace(" ", "").replace("–", "-")
+                except Exception:
+                    pass
+            # Fallback: description or topic_conditions
+            if not trl:
+                for src in [description, " ".join(topic_conditions)]:
+                    m = _re_trl.search(r"TRL\s*([3-9](?:\s*[-–]\s*[4-9])?)", src or "", _re_trl.IGNORECASE)
+                    if m:
+                        trl = "TRL " + m.group(1).replace(" ", "").replace("–", "-")
+                        break
 
             status_val = "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming"
 
