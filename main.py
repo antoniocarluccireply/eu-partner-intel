@@ -851,8 +851,31 @@ async def search_calls(
             else:
                 budget_meur = ""
 
-            # Description and programme division
-            description = _strip_html(_euft_extract_description(hit, meta))
+            # Description: prefer descriptionByte (full topic text) over topicConditions
+            import base64 as _b64_desc
+            description = ""
+            desc_byte_raw2 = meta.get("descriptionByte") or []
+            desc_byte_str2 = (desc_byte_raw2[0] if isinstance(desc_byte_raw2, list) and desc_byte_raw2 else "").strip()
+            if desc_byte_str2:
+                try:
+                    _full_html = _b64_desc.b64decode(desc_byte_str2).decode("utf-8", errors="replace")
+                    _full_text = _strip_html(_full_html)
+                    # Extract Expected Outcome section
+                    import re as _re_desc
+                    _scope = _re_desc.search(r"Scope[:\\s]*(.{100,600}?)(?:Expected|Proposals|$)", _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE)
+                    _outcome = _re_desc.search(r"Expected Outcome[:\\s]*(.{100,600}?)(?:Scope|Proposals|$)", _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE)
+                    if _outcome:
+                        description = _outcome.group(1).strip()[:400]
+                    elif _scope:
+                        description = _scope.group(1).strip()[:400]
+                    else:
+                        # Skip conditions boilerplate, take first meaningful paragraph
+                        _paras = [p.strip() for p in _full_text.split("  ") if len(p.strip()) > 80 and "Admissibility" not in p and "Annex" not in p]
+                        description = _paras[0][:400] if _paras else ""
+                except Exception:
+                    pass
+            if not description:
+                description = _strip_html(_euft_extract_description(hit, meta))
             prog_division_raw = _euft_extract_programme_division(meta)
             prog_division = PROG_DIVISION_MAP.get(prog_division_raw, prog_division_raw)
 
