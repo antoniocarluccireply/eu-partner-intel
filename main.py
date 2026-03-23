@@ -714,9 +714,10 @@ async def search_calls(
                 if deadline > deadline_before:
                     continue
 
-            # Semantic search: match on title + keywords + description (AND logic on tokens)
-            # Applied after description is extracted, so we do a two-pass: 
+                    # Semantic search: match on title + keywords + description (AND logic on tokens)
+            # Applied after description is extracted, so we do a two-pass:
             # store search tokens and check later
+            # Note: ignore wildcard * as search token
 
             # Extract additional metadata fields
             def _first(lst, default=""):
@@ -927,7 +928,7 @@ async def search_calls(
                 if _in_desc: _match_parts.append("description")
 
             if search:
-                _s_tokens = [t.lower() for t in search.split() if t.strip()]
+                _s_tokens = [t.lower() for t in search.split() if t.strip() and t.strip() != "*"]
                 _in_title2 = all(tok in _title_lower for tok in _s_tokens)
                 _in_kw2    = all(tok in _kw_lower for tok in _s_tokens)
                 _in_desc2  = bool(_desc_lower) and all(tok in _desc_lower for tok in _s_tokens)
@@ -942,7 +943,7 @@ async def search_calls(
 
             # Semantic search filter (applied here after description/keywords are extracted)
             if search:
-                _search_tokens = [t.strip().lower() for t in search.split() if t.strip()]
+                _search_tokens = [t.strip().lower() for t in search.split() if t.strip() and t.strip() != "*"]
                 _searchable = " ".join([
                     str(title).lower(),
                     " ".join(k.lower() for k in keywords_list),
