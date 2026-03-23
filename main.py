@@ -1513,19 +1513,27 @@ async def breakdown_by_cluster(
             break
         api_page += 1
 
-    # Group by cluster (second segment of topic_id)
-    # HORIZON-CL3-... → CL3
-    # HORIZON-INFRA-... → INFRA
-    # HORIZON-EIC-... → EIC
-    # HORIZON-MSCA-... → MSCA
-    # HORIZON-JU-... → JU (Joint Undertakings)
+    # Group by meaningful segment depending on programme structure
+    # HORIZON-CL3-... → segment[1] = CL3
+    # EDF-2026-DA-AIR-... → segment[2]=DA, segment[3]=AIR → "DA/AIR"
+    # DIGITAL-2026-... → segment[1] = 2026 (not useful), use segment[2]
     cluster_counts = defaultdict(int)
     cluster_topics = defaultdict(list)
 
     for tid in all_topics:
         parts = tid.split("-")
-        # parts[0] = programme, parts[1] = cluster/area
-        cluster = parts[1] if len(parts) > 1 else "OTHER"
+        if prog_upper == "EDF" and len(parts) >= 4:
+            # EDF-2026-DA-AIR → type=DA, domain=AIR
+            action_type = parts[2] if len(parts) > 2 else "?"
+            domain = parts[3] if len(parts) > 3 else "OTHER"
+            cluster = f"{action_type}-{domain}"
+        elif prog_upper == "DIGITAL" and len(parts) >= 3:
+            # DIGITAL-2026-BESTUSE or DIGITAL-ECCC-2026
+            cluster = parts[1] if parts[1] != "2026" else (parts[2] if len(parts) > 2 else "OTHER")
+        else:
+            # Default: second segment
+            cluster = parts[1] if len(parts) > 1 else "OTHER"
+
         cluster_counts[cluster] += 1
         if len(cluster_topics[cluster]) < 3:
             cluster_topics[cluster].append(tid)
@@ -1539,6 +1547,7 @@ async def breakdown_by_cluster(
 
     # Add human-readable labels
     CLUSTER_LABELS = {
+        # Horizon clusters
         "CL1": "Cluster 1 - Health",
         "CL2": "Cluster 2 - Culture, Creativity & Inclusive Society",
         "CL3": "Cluster 3 - Civil Security for Society",
@@ -1557,6 +1566,40 @@ async def breakdown_by_cluster(
         "MISS": "EU Missions",
         "RAISE": "RAISE - Regional AI Support Ecosystem",
         "EUROHPC": "EuroHPC Joint Undertaking",
+        # EDF action type + domain
+        "DA-AIR": "EDF DA - Air Systems",
+        "DA-NAVAL": "EDF DA - Naval Systems",
+        "DA-GROUND": "EDF DA - Ground Systems",
+        "DA-CYBER": "EDF DA - Cyber & Information",
+        "DA-SPACE": "EDF DA - Space",
+        "DA-CBRN": "EDF DA - CBRN Protection",
+        "DA-SOLDIER": "EDF DA - Soldier Systems",
+        "DA-ENERENV": "EDF DA - Energy & Environment",
+        "DA-SENSE": "EDF DA - Sensors & Intelligence",
+        "DA-C2": "EDF DA - Command & Control",
+        "DA-ACC": "EDF DA - Accelerated Actions",
+        "DA-DIS": "EDF DA - Disruptive Technologies",
+        "DA-MED": "EDF DA - Medical & CBRN",
+        "DA-EW": "EDF DA - Electronic Warfare",
+        "RA-AIR": "EDF RA - Air Research",
+        "RA-NAVAL": "EDF RA - Naval Research",
+        "RA-GROUND": "EDF RA - Ground Research",
+        "RA-CYBER": "EDF RA - Cyber Research",
+        "RA-SPACE": "EDF RA - Space Research",
+        "RA-CBRN": "EDF RA - CBRN Research",
+        "RA-SOLDIER": "EDF RA - Soldier Research",
+        "RA-SENSE": "EDF RA - Sensors Research",
+        "RA-ENERENV": "EDF RA - Energy Research",
+        "RA-DIS": "EDF RA - Disruptive Technologies Research",
+        "LS-DA": "EDF DA-LS - Large Scale Development",
+        "LS-RA": "EDF RA-LS - Large Scale Research",
+        "LS-DIS": "EDF LS - Disruptive Technologies",
+        # DIGITAL clusters
+        "ECCC": "DIGITAL-ECCC - Cybersecurity Deployment",
+        "BESTUSE": "DIGITAL - Best Use of Technology",
+        "CLOUD": "DIGITAL - Cloud & Edge",
+        "AI": "DIGITAL - AI Deployment",
+        "JU": "DIGITAL - Chips JU",
     }
 
     for item in breakdown:
