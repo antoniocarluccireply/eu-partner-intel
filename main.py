@@ -992,6 +992,309 @@ async def search_calls(
             break
         api_page += 1
 
+    # Auto-retry with relaxed search if 0 results and search was specified
+    if len(collected) == 0 and search and _clean_search(search):
+        original_search = search
+        retry_searches = []
+        _orig_tokens = _clean_search(search)
+        # Try: first token only
+        if len(_orig_tokens) > 1:
+            retry_searches.append(_orig_tokens[0])
+        # Try: no cluster
+        if cluster:
+            retry_searches.append(search)  # same search, no cluster handled below
+        # Try: synonyms
+        _syn_map = {
+            # AI / ML
+            "federated": "privacy",
+            "privacy": "confidential",
+            "confidential": "trustworthy",
+            "explainable": "trustworthy",
+            "trustworthy": "secure",
+            "generative": "artificial",
+            "llm": "language",
+            "nlp": "language",
+            "reinforcement": "autonomous",
+            "synthetic": "simulation",
+            # Cybersecurity
+            "zero": "authentication",
+            "ransomware": "malware",
+            "malware": "threat",
+            "threat": "cyber",
+            "intrusion": "detection",
+            "soc": "security",
+            "siem": "security",
+            "vulnerability": "security",
+            "penetration": "security",
+            "forensic": "cyber",
+            "cryptographic": "cryptography",
+            "post-quantum": "quantum",
+            "homomorphic": "cryptography",
+            "authentication": "identity",
+            "identity": "access",
+            # Defence / EDF
+            "autonomous": "unmanned",
+            "unmanned": "robotic",
+            "underwater": "naval",
+            "naval": "maritime",
+            "drone": "unmanned",
+            "uav": "unmanned",
+            "uuv": "underwater",
+            "soldier": "personnel",
+            "armour": "protection",
+            "electronic": "warfare",
+            "c2": "command",
+            "isr": "surveillance",
+            "ew": "warfare",
+            # Critical infrastructure
+            "scada": "industrial",
+            "ics": "industrial",
+            "ot": "operational",
+            "grid": "energy",
+            "pipeline": "infrastructure",
+            "water": "utility",
+            "railway": "transport",
+            "aviation": "transport",
+            # Data / Digital
+            "data": "digital",
+            "interoperability": "data",
+            "cloud": "digital",
+            "edge": "computing",
+            "5g": "connectivity",
+            "iot": "connected",
+            "blockchain": "distributed",
+            "digital": "data",
+            # Space / Satellite
+            "satellite": "space",
+            "leo": "satellite",
+            "geo": "satellite",
+            # Health
+            "medical": "health",
+            "clinical": "health",
+            "genomic": "biomedical",
+            # Energy / Climate
+            "hydrogen": "energy",
+            "battery": "energy",
+            "photovoltaic": "solar",
+            "offshore": "wind",
+        }
+        for tok in _orig_tokens:
+            if tok in _syn_map:
+                retry_searches.append(_syn_map[tok])
+
+        for retry_search in retry_searches[:3]:
+            _retry_tokens = _clean_search(retry_search)
+            if not _retry_tokens:
+                continue
+            # Try with same cluster first, then without
+            for _retry_cluster in ([cluster_upper, ""] if cluster_upper else [""]):
+                _retry_collected = []
+                for hit in list(seen_ids):
+                    pass  # can't re-use, need full re-scan below
+                break
+
+            # Full retry scan over already-fetched hits is not possible without re-fetching
+            # Instead just update search and re-run (signal via retry_info)
+            collected = []
+            seen_ids = set()
+            api_page = 1
+            search = retry_search
+            cluster_upper_retry = "" if cluster else cluster_upper
+            _retry_kw_tokens = _clean_search(retry_search)
+
+            # Re-run the fetch loop with new search
+            while api_page <= FETCH_LIMIT:
+                boundary = f"----euft-{_uuid.uuid4().hex}"
+                chunks = []
+                for fname, (fn, fval, fct) in {
+                    "query":     ("blob", _json.dumps(query_obj),     "application/json"),
+                    "languages": ("blob", _json.dumps(languages_obj), "application/json"),
+                    "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
+                }.items():
+                    chunks.append(f"--{boundary}\r\n".encode())
+                    chunks.append(f'Content-Disposition: form-data; name="{fname}"; filename="{fn}"\r\nContent-Type: {fct}\r\n\r\n'.encode())
+                    chunks.append(fval.encode())
+                    chunks.append(b"\r\n")
+                chunks.append(f"--{boundary}--\r\n".encode())
+                body = b"".join(chunks)
+                params = {"pageSize": "50", "pageNumber": str(api_page), "text": "***", "apiKey": "SEDIA"}
+                url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
+                async with httpx.AsyncClient(timeout=25.0) as client:
+                    r = await client.post(url, content=body, headers={
+                        "Content-Type": f"multipart/form-data; boundary={boundary}",
+                        "Accept": "application/json", "Origin": "https://ec.europa.eu",
+                    })
+                if r.status_code != 200:
+                    break
+                data = r.json()
+                hits = data.get("results") or []
+                if not hits:
+                    break
+                for hit in hits:
+                    meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
+                    ident_raw = meta.get("identifier") or []
+                    topic_id = (ident_raw[0] if isinstance(ident_raw, list) and ident_raw else str(ident_raw)).strip().upper()
+                    if not topic_id or topic_id in seen_ids:
+                        continue
+                    seen_ids.add(topic_id)
+                    if prog_upper and not topic_id.startswith(prog_upper + "-"):
+                        continue
+                    if cluster_upper and f"-{cluster_upper}-" not in topic_id:
+                        continue
+                    if kw_tokens and not all(tok in topic_id for tok in [k.lower() for k in kw_tokens]):
+                        continue
+                    title = hit.get("title") or hit.get("summary") or topic_id
+                    dl_raw = meta.get("deadlineDate") or []
+                    deadline = (dl_raw[0] if isinstance(dl_raw, list) and dl_raw else str(dl_raw)).strip()
+                    if deadline and "T" in deadline:
+                        deadline = deadline.split("T")[0]
+                    call_id_raw = meta.get("callIdentifier") or []
+                    call_id = (call_id_raw[0] if isinstance(call_id_raw, list) and call_id_raw else "").strip()
+                    if deadline_after and deadline and deadline < deadline_after:
+                        continue
+                    if deadline_before and deadline and deadline > deadline_before:
+                        continue
+                    def _first(lst, default=""):
+                        if isinstance(lst, list) and lst:
+                            v = lst[0]; return str(v).strip() if v is not None else default
+                        if lst is not None and not isinstance(lst, list): return str(lst).strip()
+                        return default
+                    call_title = _first(meta.get("callTitle"))
+                    type_raw = _first(meta.get("typeOfMGAs"))
+                    type_of_action = TYPE_OF_ACTION_MAP.get(type_raw, "")
+                    import re as _re_type2
+                    ct2 = call_title or ""
+                    m_ct2 = _re_type2.search(r"HORIZON-?(RIA|IA|CSA|COFUND|ERC|MSCA|PRIZE|PCP|PPI|LUMP)", ct2, _re_type2.IGNORECASE)
+                    if m_ct2: type_of_action = m_ct2.group(1).upper()
+                    if not type_of_action:
+                        m2 = _re_type2.search(r"\((RIA|IA|CSA|COFUND|PRIZE|ERC|MSCA|DA|RA|PCP|PPI)\)", str(title) or "")
+                        if m2: type_of_action = m2.group(1)
+                    if type_of_action in ("DA", "") and call_id:
+                        if "-RA-" in call_id or call_id.endswith("-RA"): type_of_action = "RA"
+                        elif "-DA-" in call_id or call_id.endswith("-DA"): type_of_action = "DA"
+                    keywords_raw = meta.get("keywords") or []
+                    keywords_list = [str(k).strip() for k in keywords_raw if k and not str(k).strip().startswith(("HORIZON-","EDF-","DIGITAL-","ERASMUS-","CREA-","CERV-","CEF-"))][:15]
+                    cross_cutting = meta.get("crossCuttingPriorities") or []
+                    cross_list = [str(c).strip() for c in cross_cutting if c]
+                    prog_period = _first(meta.get("programmePeriod"))
+                    ccm2id = _first(meta.get("ccm2Id"))
+                    topic_cond_raw = meta.get("topicConditions") or []
+                    topic_conditions = [_strip_html(str(t)) for t in topic_cond_raw if t][:3]
+                    primary_url = _euft_first_text(hit.get("url") or hit.get("link")) or f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}"
+                    pub_date = ""
+                    for overview in _euft_budget_overviews(meta):
+                        topic_map_b = overview.get("budgetTopicActionMap")
+                        if not isinstance(topic_map_b, dict): continue
+                        for _tid3, entries3 in topic_map_b.items():
+                            if not isinstance(entries3, list): continue
+                            for entry3 in entries3:
+                                if not isinstance(entry3, dict): continue
+                                pd3 = _euft_first_text(entry3.get("plannedOpeningDate"))
+                                if pd3:
+                                    pub_date = pd3[:10] if "T" not in pd3 else pd3.split("T")[0]
+                                    break
+                            if pub_date: break
+                        if pub_date: break
+                    min_meur2, max_meur2 = _euft_extract_budget(meta, topic_id)
+                    call_total_meur2 = None
+                    for overview2 in _euft_budget_overviews(meta):
+                        topic_map2 = overview2.get("budgetTopicActionMap")
+                        if not isinstance(topic_map2, dict): continue
+                        for _tid4, entries4 in topic_map2.items():
+                            if not isinstance(entries4, list): continue
+                            for entry4 in entries4:
+                                if not isinstance(entry4, dict): continue
+                                ident_raw2 = meta.get("identifier") or []
+                                tid4 = (ident_raw2[0] if isinstance(ident_raw2, list) and ident_raw2 else "").upper()
+                                action_full4 = str(entry4.get("action") or "").strip()
+                                action_code4 = action_full4.split(" - ", 1)[0].strip()
+                                if tid4 and action_code4 and (action_code4 == tid4 or tid4.startswith(action_code4+"-") or action_code4.startswith(tid4+"-")):
+                                    bym4 = entry4.get("budgetYearMap")
+                                    if isinstance(bym4, dict):
+                                        total4 = sum(_euft_safe_float(v) or 0 for v in bym4.values())
+                                        if total4 > 0: call_total_meur2 = total4/1_000_000
+                                    break
+                    if call_total_meur2 and call_total_meur2 > 0:
+                        if min_meur2 and max_meur2 and min_meur2 != max_meur2:
+                            budget_meur = f"{call_total_meur2:.1f}M EUR totali (contributo: {min_meur2:.1f}-{max_meur2:.1f}M/progetto)"
+                        elif max_meur2 and call_total_meur2 != max_meur2:
+                            budget_meur = f"{call_total_meur2:.1f}M EUR totali (max {max_meur2:.1f}M/progetto)"
+                        else:
+                            budget_meur = f"{call_total_meur2:.1f}M EUR"
+                    elif max_meur2 is not None and min_meur2 is not None and min_meur2 != max_meur2:
+                        budget_meur = f"{min_meur2:.1f}-{max_meur2:.1f}M EUR/progetto"
+                    elif max_meur2 is not None:
+                        budget_meur = f"{max_meur2:.1f}M EUR/progetto"
+                    elif min_meur2 is not None:
+                        budget_meur = f"{min_meur2:.1f}M EUR/progetto"
+                    else:
+                        budget_meur = ""
+                    import re as _re_desc2
+                    description = ""
+                    desc_byte_raw3 = meta.get("descriptionByte") or []
+                    desc_byte_str3 = (desc_byte_raw3[0] if isinstance(desc_byte_raw3, list) and desc_byte_raw3 else "").strip()
+                    if desc_byte_str3:
+                        try:
+                            _full_text3 = _strip_html(desc_byte_str3)
+                            _outcome3 = _re_desc2.search(r"Expected Outcome[^:]*:(.{150,1200}?)(?:Scope[^:]*:|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
+                            _scope3 = _re_desc2.search(r"Scope[^:]*:(.{150,1200}?)(?:Expected Outcome|Proposals should|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
+                            if _outcome3: description = _outcome3.group(1).strip()[:1000]
+                            elif _scope3: description = _scope3.group(1).strip()[:1000]
+                            else:
+                                _paras3 = [p.strip() for p in _full_text3.split("  ") if len(p.strip())>100 and "Admissibility" not in p and "Annex" not in p and "portal.ec" not in p]
+                                description = " ".join(_paras3[:2])[:1000] if _paras3 else ""
+                        except Exception:
+                            pass
+                    if not description:
+                        description = _strip_html(_euft_extract_description(hit, meta))
+                    prog_division_raw2 = _euft_extract_programme_division(meta)
+                    prog_division2 = PROG_DIVISION_MAP.get(prog_division_raw2, prog_division_raw2)
+                    import re as _re_trl2
+                    trl = ""
+                    _trl_src2 = description + " " + " ".join(topic_conditions)
+                    if desc_byte_str3: _trl_src2 = _strip_html(desc_byte_str3) + " " + _trl_src2
+                    m_trl2 = _re_trl2.search(r"TRL\s*([3-9](?:\s*[-\u2013]\s*[4-9])?)", _trl_src2, _re_trl2.IGNORECASE)
+                    if m_trl2: trl = "TRL " + m_trl2.group(1).replace(" ","").replace("\u2013","-")
+                    status_val2 = "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming"
+                    _match_parts2 = []
+                    _title_lower2 = str(title).lower()
+                    _kw_lower2 = " ".join(k.lower() for k in keywords_list)
+                    _desc_lower2 = description.lower() if description else ""
+                    _topic_lower2 = topic_id.lower()
+                    _s_tokens2 = _clean_search(retry_search)
+                    _in_title3 = all(tok in _title_lower2 for tok in _s_tokens2)
+                    _in_kw3 = all(tok in _kw_lower2 for tok in _s_tokens2)
+                    _in_desc3 = bool(_desc_lower2) and all(tok in _desc_lower2 for tok in _s_tokens2)
+                    if _in_title3: _match_parts2.append("title")
+                    if _in_kw3: _match_parts2.append("keywords")
+                    if _in_desc3: _match_parts2.append("description")
+                    if not _match_parts2: _match_parts2 = ["programme/cluster"]
+                    _searchable2 = f"{_title_lower2} {_kw_lower2} {_desc_lower2} {_topic_lower2}"
+                    if _s_tokens2 and not all(tok in _searchable2 for tok in _s_tokens2):
+                        continue
+                    collected.append({
+                        "topic_id": topic_id, "title": str(title)[:200], "call_id": call_id,
+                        "call_title": call_title, "status": status_val2, "deadline": deadline,
+                        "publication_date": pub_date, "type_of_action": type_of_action,
+                        "budget": budget_meur,
+                        "min_grant_meur": round(min_meur2,2) if min_meur2 else None,
+                        "max_grant_meur": round(max_meur2,2) if max_meur2 else None,
+                        "description": description, "keywords": keywords_list,
+                        "cross_cutting_priorities": cross_list, "programme_division": prog_division2,
+                        "programme_period": prog_period, "topic_conditions": topic_conditions,
+                        "ccm2id": ccm2id, "trl": trl,
+                        "portal_url": f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}",
+                        "primary_url": primary_url,
+                        "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}",
+                        "match_reason": " + ".join(dict.fromkeys(_match_parts2)),
+                        "_retry_search": retry_search,
+                    })
+                if len(hits) < 50: break
+                api_page += 1
+            if collected:
+                search = f"{original_search} → retry: {retry_search}"
+                break
+
     start_idx  = (page_number - 1) * page_size if not fetch_all else 0
     page_size_effective = page_size if not fetch_all else len(collected)
     page_items = collected[start_idx:start_idx + page_size_effective]
