@@ -654,18 +654,26 @@ async def search_calls(
             call_title      = _first(meta.get("callTitle"))
             type_raw = _first(meta.get("typeOfMGAs"))
             type_of_action = TYPE_OF_ACTION_MAP.get(type_raw, "")
+
+            # Best source: callTitle contains "HORIZON-RIA", "HORIZON-IA", "HORIZON-CSA" etc.
+            import re as _re_type
+            ct = call_title or ""
+            m_ct = _re_type.search(r"HORIZON-?(RIA|IA|CSA|COFUND|ERC|MSCA|PRIZE|PCP|PPI|LUMP)", ct, _re_type.IGNORECASE)
+            if m_ct:
+                type_of_action = m_ct.group(1).upper()
+            elif not type_of_action:
+                # Fallback: extract from topic title (e.g. "Open Internet Stack (RIA)")
+                m = _re_type.search(r"\((RIA|IA|CSA|COFUND|PRIZE|ERC|MSCA|DA|RA|PCP|PPI)\)", title or "")
+                if m:
+                    type_of_action = m.group(1)
+
             # EDF: refine DA vs RA from call_id pattern
             if type_of_action in ("DA", "") and call_id:
                 if "-RA-" in call_id or call_id.endswith("-RA") or "-LS-RA-" in call_id:
                     type_of_action = "RA"
                 elif "-DA-" in call_id or call_id.endswith("-DA"):
                     type_of_action = "DA"
-            # Fallback: extract from title (e.g. "Open Internet Stack (RIA)")
-            if not type_of_action or type_of_action == type_raw:
-                import re as _re_type
-                m = _re_type.search(r"\((RIA|IA|CSA|COFUND|PRIZE|ERC|MSCA|DA|RA|PCP|PPI)\)", title or "")
-                if m:
-                    type_of_action = m.group(1)
+
             if not type_of_action:
                 type_of_action = type_raw or ""
             keywords_raw    = meta.get("keywords") or []
@@ -709,9 +717,39 @@ async def search_calls(
                         pub_date = pd[:10] if "T" not in pd else pd.split("T")[0]
                         break
 
-            # Budget extraction
+            # Budget extraction: get both call total and per-project contribution
             min_meur, max_meur = _euft_extract_budget(meta, topic_id)
-            if max_meur is not None and min_meur is not None and min_meur != max_meur:
+
+            # Also try to get call total budget from budgetYearMap sum
+            call_total_meur = None
+            for overview in _euft_budget_overviews(meta):
+                topic_map = overview.get("budgetTopicActionMap")
+                if not isinstance(topic_map, dict): continue
+                for _tid, entries in topic_map.items():
+                    if not isinstance(entries, list): continue
+                    for entry in entries:
+                        if not isinstance(entry, dict): continue
+                        ident_raw2 = meta.get("identifier") or []
+                        tid2 = (ident_raw2[0] if isinstance(ident_raw2, list) and ident_raw2 else "").upper()
+                        action_full = str(entry.get("action") or "").strip()
+                        action_code = action_full.split(" - ", 1)[0].strip()
+                        if tid2 and action_code and (action_code == tid2 or tid2.startswith(action_code + "-") or action_code.startswith(tid2 + "-")):
+                            bym = entry.get("budgetYearMap")
+                            if isinstance(bym, dict):
+                                total = sum(_euft_safe_float(v) or 0 for v in bym.values())
+                                if total > 0:
+                                    call_total_meur = total / 1_000_000
+                            break
+
+            # Format: prefer call total, show per-project as contribution range
+            if call_total_meur and call_total_meur > 0:
+                if min_meur and max_meur and min_meur != max_meur:
+                    budget_meur = f"{call_total_meur:.1f}M EUR totali (contributo: {min_meur:.1f}-{max_meur:.1f}M/progetto)"
+                elif max_meur:
+                    budget_meur = f"{call_total_meur:.1f}M EUR totali (max {max_meur:.1f}M/progetto)"
+                else:
+                    budget_meur = f"{call_total_meur:.1f}M EUR totali"
+            elif max_meur is not None and min_meur is not None and min_meur != max_meur:
                 budget_meur = f"{min_meur:.1f}-{max_meur:.1f}M EUR/progetto"
             elif max_meur is not None:
                 budget_meur = f"{max_meur:.1f}M EUR/progetto"
