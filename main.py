@@ -917,6 +917,37 @@ async def search_calls(
 
             status_val = "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming"
 
+            # Compute match_reason: what triggered this result
+            _match_parts = []
+            _title_lower = str(title).lower()
+            _kw_lower = " ".join(k.lower() for k in keywords_list)
+            _desc_lower = description.lower() if description else ""
+            _topic_lower = topic_id.lower()
+
+            if kw_tokens:
+                _in_topic = all(tok in _topic_lower for tok in kw_tokens)
+                _in_title = all(tok in _title_lower for tok in kw_tokens)
+                _in_kw    = all(tok in _kw_lower for tok in kw_tokens)
+                _in_desc  = bool(_desc_lower) and all(tok in _desc_lower for tok in kw_tokens)
+                if _in_topic: _match_parts.append("topic_id")
+                if _in_title and not _in_topic: _match_parts.append("title")
+                if _in_kw: _match_parts.append("keywords")
+                if _in_desc: _match_parts.append("description")
+
+            if search:
+                _s_tokens = [t.lower() for t in search.split() if t.strip()]
+                _in_title2 = all(tok in _title_lower for tok in _s_tokens)
+                _in_kw2    = all(tok in _kw_lower for tok in _s_tokens)
+                _in_desc2  = bool(_desc_lower) and all(tok in _desc_lower for tok in _s_tokens)
+                if _in_title2: _match_parts.append("title")
+                if _in_kw2 and "keywords" not in _match_parts: _match_parts.append("keywords")
+                if _in_desc2 and "description" not in _match_parts: _match_parts.append("description")
+
+            if not _match_parts:
+                _match_parts = ["programme/cluster"]
+
+            match_reason = " + ".join(dict.fromkeys(_match_parts))  # deduplicated, ordered
+
             # Semantic search filter (applied here after description/keywords are extracted)
             if search:
                 _search_tokens = [t.strip().lower() for t in search.split() if t.strip()]
@@ -952,6 +983,7 @@ async def search_calls(
                 "portal_url":         f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}",
                 "primary_url":        primary_url,
                 "partner_search_url": f"https://eu-partner-intel-production.up.railway.app/partners?topic_id={topic_id}",
+                "match_reason": match_reason,
             })
 
         if len(hits) < 50:
