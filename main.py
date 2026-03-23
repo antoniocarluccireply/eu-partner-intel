@@ -586,6 +586,7 @@ async def search_calls(
     status: str = Query("open", description="open | forthcoming | all"),
     deadline_after: str = Query("", description="Filtra deadline dopo questa data: YYYY-MM-DD, es: 2026-05-01"),
     deadline_before: str = Query("", description="Filtra deadline prima di questa data: YYYY-MM-DD, es: 2026-08-31"),
+    search: str = Query("", description="Ricerca semantica su titolo, keywords e descrizione: es: 'quantum cryptography' o 'supply chain security'"),
     page_size: int = Query(20, le=100),
     page_number: int = Query(1),
 ):
@@ -626,7 +627,7 @@ async def search_calls(
 
     # If deadline filters are active, fetch ALL pages internally (ignore pagination)
     # so the agent gets complete results in one call
-    fetch_all = bool(deadline_after or deadline_before or not programme)
+    fetch_all = bool(deadline_after or deadline_before or not programme or search)
     FETCH_LIMIT = 20  # max API pages (1000 calls max)
 
     while api_page <= FETCH_LIMIT:
@@ -706,6 +707,10 @@ async def search_calls(
             if deadline_before and deadline:
                 if deadline > deadline_before:
                     continue
+
+            # Semantic search: match on title + keywords + description (AND logic on tokens)
+            # Applied after description is extracted, so we do a two-pass: 
+            # store search tokens and check later
 
             # Extract additional metadata fields
             def _first(lst, default=""):
@@ -912,6 +917,18 @@ async def search_calls(
 
             status_val = "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming"
 
+            # Semantic search filter (applied here after description/keywords are extracted)
+            if search:
+                _search_tokens = [t.strip().lower() for t in search.split() if t.strip()]
+                _searchable = " ".join([
+                    str(title).lower(),
+                    " ".join(k.lower() for k in keywords_list),
+                    description.lower(),
+                    topic_id.lower(),
+                ]).strip()
+                if not all(tok in _searchable for tok in _search_tokens):
+                    continue
+
             collected.append({
                 "topic_id":           topic_id,
                 "title":              str(title)[:200],
@@ -949,7 +966,7 @@ async def search_calls(
     page_items = collected[start_idx:start_idx + page_size_effective]
 
     return {
-        "filters":       {"programme": programme, "cluster": cluster, "keywords": keywords, "status": status, "deadline_after": deadline_after, "deadline_before": deadline_before},
+        "filters":       {"programme": programme, "cluster": cluster, "keywords": keywords, "status": status, "deadline_after": deadline_after, "deadline_before": deadline_before, "search": search},
         "total_matched": len(collected),
         "returned":      len(page_items),
         "page":          page_number,
