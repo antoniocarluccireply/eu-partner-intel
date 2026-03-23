@@ -1710,17 +1710,118 @@ async def debug_types():
     }
 
 
-@app.get("/kb-partners")
-async def kb_partners_trigger():
+@app.get("/partner-contacts")
+async def get_partner_contacts(
+    country: str = Query("", description="Filtra per paese: UK, IT, NO, AT"),
+    name: str = Query("", description="Cerca per nome organizzazione (parziale)"),
+):
     """
-    Endpoint trigger per la ricerca partner nella KB di EU Partners.
-    Restituisce istruzioni per l'agente su come cercare nella KB.
+    Restituisce i contatti dei partner dalla Knowledge Base (eu_partner_kb.json).
+    Filtra per paese o nome organizzazione.
     """
+    import os, json as _json
+
+    kb_path = os.path.join(os.path.dirname(__file__), "eu_partner_kb.json")
+    if not os.path.exists(kb_path):
+        return JSONResponse(status_code=404, content={"error": "KB file not found"})
+
+    with open(kb_path) as f:
+        data = _json.load(f)
+
+    partners = data.get("partners", [])
+    results = []
+
+    for p in partners:
+        identity = p.get("identity", {})
+        p_country = identity.get("country", "")
+        p_name = identity.get("legal_name", "")
+
+        if country and p_country.upper() != country.upper():
+            continue
+        if name and name.lower() not in p_name.lower():
+            continue
+
+        contacts = p.get("contacts", [])
+        competences = p.get("competences", {})
+        relationship = p.get("relationship", {})
+
+        results.append({
+            "legal_name": p_name,
+            "short_name": identity.get("short_name", ""),
+            "country": p_country,
+            "city": identity.get("city", ""),
+            "organization_type": identity.get("organization_type", ""),
+            "website": identity.get("website", ""),
+            "contacts": contacts,
+            "expertise": competences.get("expertise_areas", []),
+            "relationship_status": relationship.get("status", ""),
+            "last_interaction": relationship.get("last_interaction", ""),
+            "notes": relationship.get("notes", ""),
+        })
+
     return {
-        "action": "search_kb",
-        "instruction": "Cerca nella Knowledge Base con query 'partner organizzazione' e restituisci la lista completa dei partner noti ad Adeptic Reply con nome, paese, tipo organizzazione e capabilities.",
-        "query_suggestion": "partner organizzazione capabilities",
-        "note": "La KB è interna all'agente EU Partners — usa lo strumento di ricerca KB con la query suggerita."
+        "total": len(results),
+        "filters": {"country": country, "name": name},
+        "partners": results,
+    }
+
+
+async def kb_partners_list(
+    country: str = Query("", description="Filtra per paese: UK, IT, NO, AT"),
+    name: str = Query("", description="Cerca per nome organizzazione (parziale)"),
+):
+    """
+    Restituisce tutti i partner dalla Knowledge Base (eu_partner_kb.json)
+    con contatti, expertise, stato relazione e note.
+    """
+    import os, json as _json
+
+    kb_path = os.path.join(os.path.dirname(__file__), "eu_partner_kb.json")
+    if not os.path.exists(kb_path):
+        return JSONResponse(status_code=404, content={"error": "KB file not found"})
+
+    with open(kb_path) as f:
+        data = _json.load(f)
+
+    partners = data.get("partners", [])
+    results = []
+
+    for p in partners:
+        identity = p.get("identity", {})
+        p_country = identity.get("country", "")
+        p_name = identity.get("legal_name", "")
+
+        if country and p_country.upper() != country.upper():
+            continue
+        if name and name.lower() not in p_name.lower():
+            continue
+
+        results.append({
+            "legal_name": p_name,
+            "short_name": identity.get("short_name", ""),
+            "country": p_country,
+            "city": identity.get("city", ""),
+            "organization_type": identity.get("organization_type", ""),
+            "sme_status": identity.get("sme_status", False),
+            "website": identity.get("website", ""),
+            "contacts": p.get("contacts", []),
+            "expertise_areas": p.get("competences", {}).get("expertise_areas", []),
+            "technologies": p.get("competences", {}).get("technologies", []),
+            "trl_range": p.get("competences", {}).get("trl_range", ""),
+            "eu_projects_count": p.get("track_record", {}).get("eu_projects_count", 0),
+            "programs": p.get("track_record", {}).get("programs", []),
+            "relationship_status": p.get("relationship", {}).get("status", ""),
+            "last_interaction": p.get("relationship", {}).get("last_interaction", ""),
+            "relationship_notes": p.get("relationship", {}).get("notes", ""),
+            "preferred_calls": p.get("program_fit", {}).get("preferred_calls", []),
+            "preferred_roles": p.get("program_fit", {}).get("preferred_roles", []),
+        })
+
+    return {
+        "total": len(results),
+        "filters": {"country": country, "name": name},
+        "partners": results,
+        "source": "eu_partner_kb.json",
     }
 
 
