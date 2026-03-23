@@ -694,9 +694,21 @@ async def search_calls(
             # Filtro cluster: sottostringa con trattini
             if cluster_upper and f"-{cluster_upper}-" not in topic_id:
                 continue
-            # Filtro keywords: AND logic
-            if kw_tokens and not all(tok in topic_id for tok in kw_tokens):
-                continue
+            # Filtro keywords: AND logic on topic_id OR title OR description OR SEDIA keywords
+            if kw_tokens:
+                _title_str = str(hit.get("title") or hit.get("summary") or "").upper()
+                # Quick description extract for keyword matching
+                import re as _re_kw
+                _desc_byte_kw = meta.get("descriptionByte") or []
+                _desc_byte_kw_str = (_desc_byte_kw[0] if isinstance(_desc_byte_kw, list) and _desc_byte_kw else "").strip()
+                _desc_kw_text = _strip_html(_desc_byte_kw_str).upper() if _desc_byte_kw_str else ""
+                _sedia_kw_text = " ".join(str(k) for k in (meta.get("keywords") or [])).upper()
+                _matched = all(
+                    tok in topic_id or tok in _title_str or tok in _desc_kw_text or tok in _sedia_kw_text
+                    for tok in kw_tokens
+                )
+                if not _matched:
+                    continue
 
             # Title
             title = hit.get("title") or hit.get("summary") or topic_id
@@ -886,16 +898,16 @@ async def search_calls(
                         _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE
                     )
                     if _outcome:
-                        description = _outcome.group(1).strip()[:1000]
+                        description = _outcome.group(1).strip()[:3000]
                     elif _scope:
-                        description = _scope.group(1).strip()[:1000]
+                        description = _scope.group(1).strip()[:3000]
                     else:
                         _paras = [p.strip() for p in _full_text.split("  ")
                                   if len(p.strip()) > 100
                                   and "Admissibility" not in p
                                   and "Annex" not in p
                                   and "portal.ec" not in p]
-                        description = " ".join(_paras[:2])[:1000] if _paras else ""
+                        description = " ".join(_paras[:3])[:3000] if _paras else ""
                 except Exception:
                     pass
             if not description:
@@ -1240,11 +1252,11 @@ async def search_calls(
                             _full_text3 = _strip_html(desc_byte_str3)
                             _outcome3 = _re_desc2.search(r"Expected Outcome[^:]*:(.{150,1200}?)(?:Scope[^:]*:|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
                             _scope3 = _re_desc2.search(r"Scope[^:]*:(.{150,1200}?)(?:Expected Outcome|Proposals should|$)", _full_text3, _re_desc2.DOTALL|_re_desc2.IGNORECASE)
-                            if _outcome3: description = _outcome3.group(1).strip()[:1000]
-                            elif _scope3: description = _scope3.group(1).strip()[:1000]
+                            if _outcome3: description = _outcome3.group(1).strip()[:3000]
+                            elif _scope3: description = _scope3.group(1).strip()[:3000]
                             else:
                                 _paras3 = [p.strip() for p in _full_text3.split("  ") if len(p.strip())>100 and "Admissibility" not in p and "Annex" not in p and "portal.ec" not in p]
-                                description = " ".join(_paras3[:2])[:1000] if _paras3 else ""
+                                description = " ".join(_paras3[:3])[:3000] if _paras3 else ""
                         except Exception:
                             pass
                     if not description:
