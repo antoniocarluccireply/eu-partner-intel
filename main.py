@@ -634,6 +634,12 @@ async def search_calls(
     # If deadline filters are active, fetch ALL pages internally (ignore pagination)
     # so the agent gets complete results in one call
     fetch_all = bool(deadline_after or deadline_before or not programme or search)
+    # Strip programme names and wildcards from search param
+    _PROG_NAMES = {"horizon", "europe", "edf", "digital", "erasmus", "cerv", "crea", "cef", "isf", "smp", "euratom", "innovfund", "ucpm", "rfcs"}
+    def _clean_search(s):
+        return [t.strip().lower() for t in s.split() if t.strip() and t.strip() != "*" and t.strip().lower() not in _PROG_NAMES]
+
+
     FETCH_LIMIT = 20  # max API pages (1000 calls max)
 
     while api_page <= FETCH_LIMIT:
@@ -928,7 +934,7 @@ async def search_calls(
                 if _in_desc: _match_parts.append("description")
 
             if search:
-                _s_tokens = [t.lower() for t in search.split() if t.strip() and t.strip() != "*"]
+                _s_tokens = _clean_search(search)
                 _in_title2 = all(tok in _title_lower for tok in _s_tokens)
                 _in_kw2    = all(tok in _kw_lower for tok in _s_tokens)
                 _in_desc2  = bool(_desc_lower) and all(tok in _desc_lower for tok in _s_tokens)
@@ -943,7 +949,7 @@ async def search_calls(
 
             # Semantic search filter (applied here after description/keywords are extracted)
             if search:
-                _search_tokens = [t.strip().lower() for t in search.split() if t.strip() and t.strip() != "*"]
+                _search_tokens = _clean_search(search)
                 _searchable = " ".join([
                     str(title).lower(),
                     " ".join(k.lower() for k in keywords_list),
