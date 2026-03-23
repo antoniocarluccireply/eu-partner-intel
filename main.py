@@ -620,6 +620,12 @@ async def search_calls(
     cluster_upper = cluster.upper().strip() if cluster else ""
     kw_tokens     = [k.strip() for k in keywords.upper().split()] if keywords else []
 
+    # Default: never show calls with deadline already passed
+    from datetime import date as _date
+    _today = _date.today().isoformat()
+    if not deadline_after:
+        deadline_after = _today
+
     collected = []
     seen_ids  = set()
     api_page  = 1
