@@ -199,22 +199,16 @@ async def get_org_track_record(
     if not name:
         return JSONResponse(status_code=400, content={"error": "Fornire almeno name= per la ricerca profilo"})
 
-    # Ricerca per nome su SEDIA
-    # Per acronimi corti (tutto maiuscolo, ≤8 char) prova senza virgolette
-    is_acronym = name == name.upper() and len(name) <= 8 and " " not in name
-    search_text = f'"{name}"' if len(name) > 6 and not is_acronym else name
+    # Ricerca per nome su SEDIA (funziona perché il nome è full-text)
+    search_text = f'"{name}"' if len(name) > 6 else name
 
-    async def _search_sedia(text):
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            r = await client.post(
-                SEDIA_URL,
-                params={"apiKey": "SEDIA_PERSON", "text": text, "pageSize": 20, "pageNumber": 1},
-                json={},
-                headers=HEADERS,
-            )
-        return r
-
-    r = await _search_sedia(search_text)
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.post(
+            SEDIA_URL,
+            params={"apiKey": "SEDIA_PERSON", "text": search_text, "pageSize": 10, "pageNumber": 1},
+            json={},
+            headers=HEADERS,
+        )
 
     if r.status_code != 200:
         return JSONResponse(status_code=r.status_code, content={"error": r.text[:300]})
@@ -222,36 +216,21 @@ async def get_org_track_record(
     hits = r.json().get("results") or r.json().get("hits") or []
 
     # Trova il match migliore
-    def _best_match(hits, name, pic):
-        name_lower = name.lower()
-        name_tokens = set(name_lower.split())
-        for hit in hits:
-            meta = hit.get("metadata", {})
-            hit_pic = (meta.get("pic") or [""])[0]
-            hit_name = (meta.get("name") or [""])[0].lower()
-            if pic and hit_pic == pic:
-                return hit
-            if name_lower in hit_name or hit_name in name_lower:
-                return hit
-            # Acronym match: tutte le lettere dell'acronimo sono iniziali delle parole del nome
-            if is_acronym:
-                hit_initials = "".join(w[0] for w in hit_name.split() if w)
-                if name_lower in hit_initials or name_lower == hit_initials[:len(name_lower)]:
-                    return hit
-        return None
+    match = None
+    for hit in hits:
+        meta = hit.get("metadata", {})
+        hit_pic = (meta.get("pic") or [""])[0]
+        hit_name = (meta.get("name") or [""])[0].lower()
+        # Match esatto per PIC se disponibile
+        if pic and hit_pic == pic:
+            match = hit
+            break
+        # Match per nome
+        if name.lower() in hit_name or hit_name in name.lower():
+            match = hit
+            break
 
-    match = _best_match(hits, name, pic)
-
-    # Retry senza virgolette se acronimo non trovato
-    if not match and is_acronym and search_text != name:
-        r2 = await _search_sedia(name)
-        if r2.status_code == 200:
-            hits2 = r2.json().get("results") or r2.json().get("hits") or []
-            match = _best_match(hits2, name, pic)
-            if not match and hits2:
-                match = hits2[0]
-
-    # Fallback al primo risultato se ancora nessun match
+    # Fallback al primo risultato
     if not match and hits:
         match = hits[0]
 
