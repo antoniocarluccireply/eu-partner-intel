@@ -12,26 +12,23 @@ app = FastAPI(title="EU Partner Intel Proxy")
 SEDIA_URL = "https://api.tech.ec.europa.eu/search-api/prod/rest/search"
 
 COUNTRY_MAP = {
-    # Core EU member states
     "20000839": "BE", "20000908": "BG", "20000905": "CZ", "20000875": "DK",
     "20000879": "EE", "20000884": "FI", "20000890": "FR", "20000873": "DE",
     "20000902": "GR", "20000886": "HU", "20000887": "IE", "20000922": "IT",
     "20000894": "LV", "20000892": "LT", "20000895": "MT", "20000906": "NL",
     "20000897": "AT", "20000909": "PL", "20000898": "PT", "20000899": "RO",
-    "20000901": "SI", "20000883": "ES", "20000903": "SE", "20000880": "EE",  # 20000880=EE confirmed
-    "20000885": "FI",  # confirmed: AIEDU OY is Finnish
-    # Non-EU Europe
+    "20000901": "SI", "20000883": "ES", "20000903": "SE", "20000880": "EE",
+    "20000885": "FI",
     "20000904": "CH", "20000888": "IS", "20000896": "NO", "20000912": "GB",
     "20000913": "UA", "20000914": "RS", "20000910": "TR",
-    "20001026": "TR",  # confirmed: FIRAT UNIVERSITESI is Turkish
+    "20001026": "TR",
     "20000825": "AL",
-    "20000986": "PL",  # confirmed: TECH2MARKET is Polish
-    "20000893": "GB",  # confirmed: 21C CONSULTANCY is UK
-    "20000973": "NL",  # confirmed: 8D RESEARCH is Dutch
-    "20000994": "RO",  # confirmed: ROHEALTH and EFFECTIVE DECISIONS are Romanian
-    "20001001": "SE",  # confirmed: Intersectionality Lab is Swedish
-    "31008860": "XK",  # Kosovo (non-standard ID in SEDIA)
-    # Others
+    "20000986": "PL",
+    "20000893": "GB",
+    "20000973": "NL",
+    "20000994": "RO",
+    "20001001": "SE",
+    "31008860": "XK",
     "20000907": "CY", "20000871": "CY", "20000841": "BG", "20000919": "IL", "20000920": "MA",
     "20000878": "HR", "20000882": "HU", "20000891": "LV", "20000900": "RO",
     "20000872": "CZ", "20000830": "BA", "20000876": "EE", "20000877": "FI",
@@ -78,9 +75,6 @@ def normalize_partner(hit: dict, topic_id: str) -> dict:
     except Exception:
         pass
 
-    # sedia_description: keywords autodichiarati del profilo SEDIA dell'org
-    # NOTA: la descrizione testuale dell'annuncio (quella visibile nel portale)
-    # ? disponibile via FT-Announcements endpoint separato, non in SEDIA_PERSON
     raw_keywords = meta.get("keywords") or []
     sedia_description = ", ".join(raw_keywords[:20]) if raw_keywords else ""
 
@@ -111,10 +105,6 @@ async def get_partners(
     topic_id: str = Query(..., description="Es: HORIZON-INFRA-2026-01-EOSC-01"),
     country: str = Query("", description="Filtra per paese ISO, es: DE"),
 ):
-    """
-    Recupera TUTTI i partner per il topic_id, paginando automaticamente SEDIA
-    e deduplicando per pic_number. Ritorna solo i partner con topic_id nel campo topics.
-    """
     exact_query = f'"{topic_id}"'
     seen_pics = set()
     partners = []
@@ -150,7 +140,6 @@ async def get_partners(
                 if topic_id not in topics_field:
                     continue
 
-                # Deduplica per pic_number
                 pic = (meta.get("pic") or [""])[0]
                 dedup_key = pic if pic else (meta.get("name") or [""])[0]
                 if dedup_key in seen_pics:
@@ -162,7 +151,6 @@ async def get_partners(
                     continue
                 partners.append(partner)
 
-            # Smetti di paginare se abbiamo esaurito i risultati
             if page * page_size >= total or len(hits) < page_size:
                 break
             page += 1
@@ -180,26 +168,18 @@ async def get_org_track_record(
     pic: str = Query("", description="PIC number a 9 cifre"),
     name: str = Query("", description="Nome organizzazione"),
 ):
-    """
-    Track record da SEDIA_PERSON.
-    NOTA: SEDIA indicizza per nome (full-text), non per PIC.
-    Se viene passato solo pic, restituisce il link diretto senza dati di profilo.
-    Se viene passato name (o name+pic), cerca per nome e arricchisce con i dati.
-    """
     import json as _json
 
-    # Se abbiamo solo il PIC senza nome, restituiamo almeno il link diretto
     if pic and not name:
         return {
             "pic": pic,
             "portal_url": f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/org-details/{pic}",
-            f"note": f"Per ottenere il profilo completo chiama /org?pic={pic}&name=NOME_LEGALE oppure /org?name=NOME_LEGALE",
+            "note": f"Per ottenere il profilo completo chiama /org?pic={pic}&name=NOME_LEGALE oppure /org?name=NOME_LEGALE",
         }
 
     if not name:
         return JSONResponse(status_code=400, content={"error": "Fornire almeno name= per la ricerca profilo"})
 
-    # Ricerca per nome su SEDIA (funziona perché il nome è full-text)
     search_text = f'"{name}"' if len(name) > 6 else name
 
     async with httpx.AsyncClient(timeout=20.0) as client:
@@ -215,27 +195,22 @@ async def get_org_track_record(
 
     hits = r.json().get("results") or r.json().get("hits") or []
 
-    # Trova il match migliore
     match = None
     for hit in hits:
         meta = hit.get("metadata", {})
         hit_pic = (meta.get("pic") or [""])[0]
         hit_name = (meta.get("name") or [""])[0].lower()
-        # Match esatto per PIC se disponibile
         if pic and hit_pic == pic:
             match = hit
             break
-        # Match per nome
         if name.lower() in hit_name or hit_name in name.lower():
             match = hit
             break
 
-    # Fallback al primo risultato
     if not match and hits:
         match = hits[0]
 
     if not match:
-        # Anche senza profilo SEDIA, restituiamo almeno il link se abbiamo il PIC
         base = {"searched_name": name, "note": "Profilo non trovato in SEDIA"}
         if pic:
             base["pic"] = pic
@@ -283,11 +258,7 @@ async def get_org_track_record(
     }
 
 
-
-
-
-
-# ---- Budget/description helpers ported from euft ----
+# ---- Budget/description helpers ----
 
 def _euft_safe_json(raw):
     if raw is None: return None
@@ -360,13 +331,6 @@ def _euft_actions(md):
     return []
 
 def _euft_extract_budget(md, topic_id):
-    """Extract min_meur, max_meur from budgetOverview or actions.
-    
-    Strategy:
-    1. Try exact topic_id match in budgetTopicActionMap
-    2. If not found or budget seems per-topic (very small), sum all entries in the call
-    3. Fallback to actions expectedGrant
-    """
     min_meur = None
     max_meur = None
 
@@ -374,7 +338,6 @@ def _euft_extract_budget(md, topic_id):
         topic_map = overview.get("budgetTopicActionMap")
         if not isinstance(topic_map, dict): continue
 
-        # Collect ALL entries across all topic_ids in this call
         all_entries = []
         matched_entry = None
 
@@ -392,7 +355,6 @@ def _euft_extract_budget(md, topic_id):
                 ):
                     matched_entry = entry
 
-        # Try matched entry first
         entry_to_use = matched_entry or (all_entries[0] if all_entries else None)
         if entry_to_use:
             mn = _euft_safe_float(entry_to_use.get("minContribution"))
@@ -400,7 +362,6 @@ def _euft_extract_budget(md, topic_id):
             if mn is not None: min_meur = mn / 1_000_000
             if mx is not None: max_meur = mx / 1_000_000
 
-            # Try budgetYearMap
             if not min_meur and not max_meur:
                 bym = entry_to_use.get("budgetYearMap")
                 if isinstance(bym, dict):
@@ -410,8 +371,6 @@ def _euft_extract_budget(md, topic_id):
                             min_meur = max_meur = yval / 1_000_000
                             break
 
-            # If budget found but seems per-topic (< 20M for Horizon), 
-            # try summing all entries to get call-level budget
             if min_meur is not None and min_meur < 20 and len(all_entries) > 1 and not matched_entry:
                 total = 0
                 for e in all_entries:
@@ -423,7 +382,6 @@ def _euft_extract_budget(md, topic_id):
             if min_meur is not None or max_meur is not None:
                 return min_meur, max_meur
 
-    # Fallback: actions -> expectedGrant
     for action in _euft_actions(md):
         eg = _euft_safe_float(action.get("expectedGrant"))
         if eg is not None:
@@ -432,7 +390,6 @@ def _euft_extract_budget(md, topic_id):
     return None, None
 
 def _euft_extract_description(root, md):
-    """Extract description/destination from SEDIA hit. Strip HTML before truncating."""
     import html as _html_mod2
     import re as _re2
 
@@ -455,7 +412,6 @@ def _euft_extract_description(root, md):
     return dest[:300] if dest else ""
 
 def _euft_extract_programme_division(md):
-    """Extract programme division / focus area."""
     return (
         _euft_first_text(md.get("programmeDivision")) or
         _euft_first_text(md.get("focusArea")) or
@@ -466,30 +422,22 @@ def _euft_extract_programme_division(md):
 import re as _re_html
 
 def _strip_html(text):
-    """Remove HTML tags and decode HTML entities from text."""
     if not text:
         return ""
     import html as _html_mod
-    # Decode HTML entities first (&gt; -> >, &amp; -> &, etc.)
     decoded = _html_mod.unescape(str(text))
-    # Remove HTML tags
     clean = _re_html.sub(r"<[^>]+>", " ", decoded)
-    # Collapse whitespace
     clean = _re_html.sub(r"\s+", " ", clean).strip()
-    # Remove leading punctuation artifacts like "> " at start
     clean = _re_html.sub(r'^[">\s]+', "", clean).strip()
     return clean[:500]
 
-# SEDIA type_of_action numeric ID -> human readable
 TYPE_OF_ACTION_MAP = {
-    # EDF
     "44175699": "DA",
     "44175709": "RA",
-    # Horizon Europe (confirmed from portal)
-    "43027846": "RIA",       # Research & Innovation Action
-    "43027847": "IA",        # Innovation Action
-    "43027848": "CSA",       # Coordination & Support Action
-    "43027849": "RIA",       # confirmed: HORIZON-CL3-2026-02-CS-ECCC-01
+    "43027846": "RIA",
+    "43027847": "IA",
+    "43027848": "CSA",
+    "43027849": "RIA",
     "43027850": "COFUND",
     "43027851": "ERC",
     "43027852": "MSCA",
@@ -498,7 +446,6 @@ TYPE_OF_ACTION_MAP = {
     "43027855": "PPI",
     "43027856": "IA",
     "43027857": "LUMP",
-    # Legacy codes
     "31094902": "RIA",
     "31094903": "IA",
     "31094904": "CSA",
@@ -512,49 +459,46 @@ TYPE_OF_ACTION_MAP = {
     "44175710": "SME",
     "44175711": "PRIZE",
     "44175712": "LUMP",
-    # Programme-specific types (confirmed from /debug-types)
-    "43080006": "Grant",          # INNOVFUND - Large/Medium Scale Projects
-    "43140990": "Deployment",     # DIGITAL Europe - Deployment/Best Use
-    "43246967": "Grant",          # AGRIP - Agricultural promotion
-    "43249539": "Works/Studies",  # CEF Digital - Infrastructure works
-    "43249821": "Action Grant",   # CERV - Citizens engagement
-    "43249881": "Grant",          # CREA - Creative Europe networks
-    "43249888": "Grant",          # CREA - Creative Europe cooperation
-    "43250003": "TA Grant",       # EUAF - Technical Assistance
-    "43250150": "Action Grant",   # ISF - Internal Security Fund
-    "43250244": "Action Grant",   # JUST - Justice programme
-    "43250350": "Grant",          # PERI - Euro protection
-    "43250365": "RIA",            # RFCS - Research Fund Coal & Steel
-    "43250793": "Grant",          # SMP - Single Market Programme
-    "43251093": "Grant",          # SOCPL - Social dialogue
-    "43251282": "Grant",          # UCPM - Civil Protection
-    "43251971": "MSCA",           # HORIZON MSCA - COFUND/DN
-    "43252078": "Grant",          # RENEWFM - Renewable energy financing
-    "43252140": "Grant",          # ESF - EURES mobility
-    "43252184": "RIA",            # EURATOM - Research actions
-    "43252207": "Grant",          # ESC - Volunteering humanitarian
-    "43252213": "Quality Label",  # ESC - Erasmus quality label
-    "43341839": "Capacity Building", # ERASMUS - CB international
-    "43341854": "Certification",  # ERASMUS - ECHE
-    "43391809": "Grant",          # EMFAF - Maritime spatial planning
-    "43567892": "PRIZE",          # HORIZON - Prize
-    "43694065": "Subsidy",        # EP - Conference interpreting
-    "44237927": "PRIZE",          # EURATOM - SOFT Prize
-    "44772026": "Loan",           # JTM - Framework loans
-    "45095551": "DA-LS",          # EDF - Large Scale Development Actions
-    "45530684": "Service",        # EUBA - Service contracts
-    "46509227": "Grant",          # ED - Europe Direct
-    "47421168": "Prep Action",    # PPPA - Preparatory actions
-    "47452399": "EIC Scale-Up",   # EIC STEP Scale Up
+    "43080006": "Grant",
+    "43140990": "Deployment",
+    "43246967": "Grant",
+    "43249539": "Works/Studies",
+    "43249821": "Action Grant",
+    "43249881": "Grant",
+    "43249888": "Grant",
+    "43250003": "TA Grant",
+    "43250150": "Action Grant",
+    "43250244": "Action Grant",
+    "43250350": "Grant",
+    "43250365": "RIA",
+    "43250793": "Grant",
+    "43251093": "Grant",
+    "43251282": "Grant",
+    "43251971": "MSCA",
+    "43252078": "Grant",
+    "43252140": "Grant",
+    "43252184": "RIA",
+    "43252207": "Grant",
+    "43252213": "Quality Label",
+    "43341839": "Capacity Building",
+    "43341854": "Certification",
+    "43391809": "Grant",
+    "43567892": "PRIZE",
+    "43694065": "Subsidy",
+    "44237927": "PRIZE",
+    "44772026": "Loan",
+    "45095551": "DA-LS",
+    "45530684": "Service",
+    "46509227": "Grant",
+    "47421168": "Prep Action",
+    "47452399": "EIC Scale-Up",
 }
 
-# SEDIA programme_division numeric ID -> human readable (partial)
 PROG_DIVISION_MAP = {
     "44181033": "EDF-DA",
     "44181034": "EDF-RA",
     "43298664": "AGRIP",
     "43251814": "CREA-MEDIA",
-    # Horizon Europe clusters
     "43108390": "CL3 - Civil Security",
     "43108541": "CL3 - Critical Infrastructure",
     "43118971": "CL3 - Disaster Resilience",
@@ -576,24 +520,140 @@ PROG_DIVISION_MAP = {
     "43108406": "WIDERA",
 }
 
-# ---- End helpers ----
+
+# ---- Profile-based search ----
+
+CALL_PROFILES = {
+    "ipcei": {
+        "label": "IPCEI-CIS / European Edge Continuum / Cloud-Native Apps",
+        "queries": [
+            {"search": "telco edge cloud continuum", "programme": "HORIZON", "search_mode": "OR"},
+            {"search": "cloud federated infrastructure deployment", "programme": "DIGITAL", "search_mode": "OR"},
+            {"search": "distributed resilient digital infrastructure", "programme": "EDF", "search_mode": "OR"},
+            {"search": "cloud native industrial orchestration", "programme": "HORIZON", "search_mode": "OR"},
+            {"search": "edge computing low latency industrial", "programme": "HORIZON", "search_mode": "OR"},
+            {"search": "cloud continuum orchestration", "programme": "HORIZON", "search_mode": "AND"},
+        ]
+    },
+    "reactor": {
+        "label": "REACTOR / Humanoid Robotics / Physical AI",
+        "queries": [
+            {"search": "humanoid robotics physical AI", "programme": "HORIZON", "search_mode": "OR"},
+            {"search": "edge AI industrial manufacturing robot", "programme": "HORIZON", "search_mode": "OR"},
+            {"search": "human robot interaction collaborative manufacturing", "programme": "HORIZON", "search_mode": "OR"},
+            {"search": "autonomous systems robotics defence", "programme": "EDF", "search_mode": "OR"},
+        ]
+    },
+    "quantum": {
+        "label": "Quantum / QSTN / Secure Communications",
+        "queries": [
+            {"search": "quantum network cryptography", "programme": "HORIZON", "search_mode": "OR"},
+            {"search": "quantum key distribution secure", "programme": "EDF", "search_mode": "OR"},
+            {"search": "post-quantum cryptography infrastructure", "programme": "HORIZON", "search_mode": "OR"},
+        ]
+    },
+    "cyber": {
+        "label": "Cybersecurity / NIS2 / Critical Infrastructure",
+        "queries": [
+            {"search": "cybersecurity critical infrastructure", "programme": "HORIZON", "search_mode": "OR"},
+            {"search": "cyber defence resilience", "programme": "EDF", "search_mode": "OR"},
+            {"search": "NIS2 compliance digital security", "programme": "DIGITAL", "search_mode": "OR"},
+        ]
+    },
+}
+
+
+@app.get("/calls/profiles")
+async def list_profiles():
+    """Lista i profili disponibili per /calls/profile."""
+    return {
+        "available_profiles": [
+            {"id": k, "label": v["label"], "queries_count": len(v["queries"])}
+            for k, v in CALL_PROFILES.items()
+        ]
+    }
+
+
+@app.get("/calls/profile")
+async def search_by_profile(
+    profile: str = Query(..., description="ipcei | reactor | quantum | cyber"),
+    status: str = Query("all", description="open | forthcoming | all"),
+    deadline_before: str = Query("", description="Filtra deadline prima di YYYY-MM-DD"),
+):
+    """
+    Cerca call EU per profilo aziendale predefinito.
+    Esegue più query in parallelo, deduplica per topic_id, ordina per deadline.
+    """
+    import asyncio as _asyncio
+
+    profile_data = CALL_PROFILES.get(profile.lower())
+    if not profile_data:
+        available = list(CALL_PROFILES.keys())
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Profilo '{profile}' non trovato. Disponibili: {available}"}
+        )
+
+    async def _single_search(q: dict):
+        try:
+            result = await search_eu_calls(
+                keywords="",
+                programme=q.get("programme", ""),
+                cluster=q.get("cluster", ""),
+                status=status,
+                deadline_after="",
+                deadline_before=deadline_before,
+                search=q.get("search", ""),
+                page_size=50,
+                page_number=1,
+                search_mode=q.get("search_mode", "AND"),
+            )
+            return result.get("calls", []) if isinstance(result, dict) else []
+        except Exception:
+            return []
+
+    queries = profile_data["queries"]
+    results_lists = await _asyncio.gather(*[_single_search(q) for q in queries])
+
+    seen = set()
+    merged = []
+    for call_list in results_lists:
+        for call in call_list:
+            tid = call.get("topic_id", "")
+            if tid and tid not in seen:
+                seen.add(tid)
+                merged.append(call)
+
+    def _sort_key(c):
+        d = c.get("deadline", "")
+        return d if d else "9999-12-31"
+
+    merged.sort(key=_sort_key)
+
+    return {
+        "profile": profile,
+        "profile_label": profile_data["label"],
+        "status_filter": status,
+        "queries_run": len(queries),
+        "total_unique": len(merged),
+        "calls": merged,
+        "note": "Risultati aggregati e deduplicati da query multiple parallele. Ordinati per deadline crescente.",
+    }
+
 
 @app.get("/calls")
-async def search_calls(
+async def search_eu_calls(
     keywords: str = Query("", description="Parole chiave nel topic_id: INFRA, DATA, CYBER, TWIN, 2026"),
     programme: str = Query("", description="Programma: HORIZON, EDF, DIGITAL, CEF, LIFE, CREA, ERASMUS"),
     cluster: str = Query("", description="Cluster Horizon: CL3, CL4, CL5, INFRA, HLTH"),
     status: str = Query("open", description="open | forthcoming | all"),
-    deadline_after: str = Query("", description="Filtra deadline dopo questa data: YYYY-MM-DD, es: 2026-05-01"),
-    deadline_before: str = Query("", description="Filtra deadline prima di questa data: YYYY-MM-DD, es: 2026-08-31"),
-    search: str = Query("", description="Ricerca semantica su titolo, keywords e descrizione: es: 'quantum cryptography' o 'supply chain security'"),
+    deadline_after: str = Query("", description="Filtra deadline dopo questa data: YYYY-MM-DD"),
+    deadline_before: str = Query("", description="Filtra deadline prima di questa data: YYYY-MM-DD"),
+    search: str = Query("", description="Ricerca semantica su titolo, keywords e descrizione"),
     page_size: int = Query(20, le=100),
     page_number: int = Query(1),
+    search_mode: str = Query("AND", description="AND | OR — logica di matching per search=. Default AND. Usa OR per query con 3+ token su profili tecnici complessi."),
 ):
-    """
-    Cerca call EU aperte/future con title e deadline reali via SEDIA (type=1, multipart).
-    Filtra per programme sul prefisso del topic_id (identifier field).
-    """
     import uuid as _uuid
     import urllib.parse as _urlparse
     import json as _json
@@ -608,7 +668,6 @@ async def search_calls(
     else:
         status_terms = [STATUS_OPEN, STATUS_FORTHCOMING]
 
-    # Query DSL — type=1 = grants/calls, confermato dal debug
     query_obj  = {"bool": {"must": [
         {"terms": {"type": ["1"]}},
         {"terms": {"status": status_terms}},
@@ -620,7 +679,6 @@ async def search_calls(
     cluster_upper = cluster.upper().strip() if cluster else ""
     kw_tokens     = [k.strip() for k in keywords.upper().split()] if keywords else []
 
-    # Default: never show calls with deadline already passed
     from datetime import date as _date
     _today = _date.today().isoformat()
     if not deadline_after:
@@ -631,16 +689,13 @@ async def search_calls(
     api_page  = 1
     total_api = None
 
-    # If deadline filters are active, fetch ALL pages internally (ignore pagination)
-    # so the agent gets complete results in one call
     fetch_all = bool(deadline_after or deadline_before or not programme or search)
-    # Strip programme names and wildcards from search param
+
     _PROG_NAMES = {"horizon", "europe", "edf", "digital", "erasmus", "cerv", "crea", "cef", "isf", "smp", "euratom", "innovfund", "ucpm", "rfcs"}
     def _clean_search(s):
         return [t.strip().lower() for t in s.split() if t.strip() and t.strip() != "*" and t.strip().lower() not in _PROG_NAMES]
 
-
-    FETCH_LIMIT = 20  # max API pages (1000 calls max)
+    FETCH_LIMIT = 20
 
     while api_page <= FETCH_LIMIT:
         boundary = f"----euft-{_uuid.uuid4().hex}"
@@ -681,23 +736,18 @@ async def search_calls(
         for hit in hits:
             meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
 
-            # topic_id viene dall'identifier field (es. HORIZON-CL4-2026-04-DATA-06)
             ident_raw = meta.get("identifier") or []
             topic_id  = (ident_raw[0] if isinstance(ident_raw, list) and ident_raw else str(ident_raw)).strip().upper()
             if not topic_id or topic_id in seen_ids:
                 continue
             seen_ids.add(topic_id)
 
-            # Filtro programme: prefisso del topic_id
             if prog_upper and not topic_id.startswith(prog_upper + "-"):
                 continue
-            # Filtro cluster: sottostringa con trattini
             if cluster_upper and f"-{cluster_upper}-" not in topic_id:
                 continue
-            # Filtro keywords: AND logic on topic_id OR title OR description OR SEDIA keywords
             if kw_tokens:
                 _title_str = str(hit.get("title") or hit.get("summary") or "").upper()
-                # Quick description extract for keyword matching
                 import re as _re_kw
                 _desc_byte_kw = meta.get("descriptionByte") or []
                 _desc_byte_kw_str = (_desc_byte_kw[0] if isinstance(_desc_byte_kw, list) and _desc_byte_kw else "").strip()
@@ -710,21 +760,16 @@ async def search_calls(
                 if not _matched:
                     continue
 
-            # Title
             title = hit.get("title") or hit.get("summary") or topic_id
 
-            # Deadline
             dl_raw = meta.get("deadlineDate") or []
             deadline = (dl_raw[0] if isinstance(dl_raw, list) and dl_raw else str(dl_raw)).strip()
-            # Normalize: 2026-04-23T00:00:00.000+0000 -> 2026-04-23
             if deadline and "T" in deadline:
                 deadline = deadline.split("T")[0]
 
-            # Call identifier (parent call)
             call_id_raw = meta.get("callIdentifier") or []
             call_id = (call_id_raw[0] if isinstance(call_id_raw, list) and call_id_raw else "").strip()
 
-            # Deadline range filter
             if deadline_after and deadline:
                 if deadline < deadline_after:
                     continue
@@ -732,12 +777,6 @@ async def search_calls(
                 if deadline > deadline_before:
                     continue
 
-                    # Semantic search: match on title + keywords + description (AND logic on tokens)
-            # Applied after description is extracted, so we do a two-pass:
-            # store search tokens and check later
-            # Note: ignore wildcard * as search token
-
-            # Extract additional metadata fields
             def _first(lst, default=""):
                 if isinstance(lst, list) and lst:
                     v = lst[0]
@@ -749,8 +788,6 @@ async def search_calls(
             call_title      = _first(meta.get("callTitle"))
             import re as _re_type
 
-            # BEST SOURCE: budgetOverview action string for this topic_id
-            # e.g. "HORIZON-CL3-2026-02-CS-ECCC-02 - HORIZON-IA HORIZON Innovation Actions"
             type_of_action = ""
             for _ov in _euft_budget_overviews(meta):
                 _tm = _ov.get("budgetTopicActionMap")
@@ -762,7 +799,6 @@ async def search_calls(
                         _af = str(_entry.get("action") or "").strip()
                         _ac = _af.split(" - ", 1)[0].strip()
                         if _ac == topic_id:
-                            # action string after " - " contains type
                             _rest = _af.split(" - ", 1)[1] if " - " in _af else ""
                             _m = _re_type.search(r"HORIZON-?(RIA|IA|CSA|COFUND|ERC|MSCA|PRIZE|PCP|PPI|LUMP)", _rest, _re_type.IGNORECASE)
                             if _m:
@@ -771,7 +807,6 @@ async def search_calls(
                     if type_of_action: break
                 if type_of_action: break
 
-            # Fallback: actions[*].types[*].typeOfAction
             if not type_of_action:
                 for _action in _euft_actions(meta):
                     for _t in (_action.get("types") or []):
@@ -782,23 +817,21 @@ async def search_calls(
                             break
                     if type_of_action: break
 
-            # Fallback: typeOfMGAs map
             if not type_of_action:
                 type_raw = _first(meta.get("typeOfMGAs"))
                 type_of_action = TYPE_OF_ACTION_MAP.get(type_raw, "")
 
-            # Fallback: topic title "(RIA)" or "(IA)"
             if not type_of_action:
                 _m = _re_type.search(r"\((RIA|IA|CSA|COFUND|PRIZE|ERC|MSCA|DA|RA|PCP|PPI)\)", title or "")
                 if _m:
                     type_of_action = _m.group(1)
 
-            # EDF: refine DA vs RA from call_id pattern
             if type_of_action in ("DA", "") and call_id:
                 if "-RA-" in call_id or call_id.endswith("-RA") or "-LS-RA-" in call_id:
                     type_of_action = "RA"
                 elif "-DA-" in call_id or call_id.endswith("-DA"):
                     type_of_action = "DA"
+
             keywords_raw    = meta.get("keywords") or []
             keywords_list   = [
                 str(k).strip() for k in keywords_raw
@@ -811,14 +844,11 @@ async def search_calls(
             topic_cond_raw  = meta.get("topicConditions") or []
             topic_conditions = [_strip_html(str(t)) for t in topic_cond_raw if t][:3]
 
-            # primary_url from root or construct from topic_id
             primary_url = (
                 _euft_first_text(hit.get("url") or hit.get("link")) or
                 f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/topic-details/{topic_id}"
             )
 
-            # publication_date from budgetEntry (already computed in _euft_extract_budget)
-            # Re-extract for publication date
             pub_date = ""
             for overview in _euft_budget_overviews(meta):
                 topic_map = overview.get("budgetTopicActionMap")
@@ -840,10 +870,8 @@ async def search_calls(
                         pub_date = pd[:10] if "T" not in pd else pd.split("T")[0]
                         break
 
-            # Budget extraction: get both call total and per-project contribution
             min_meur, max_meur = _euft_extract_budget(meta, topic_id)
 
-            # Also try to get call total budget from budgetYearMap sum
             call_total_meur = None
             for overview in _euft_budget_overviews(meta):
                 topic_map = overview.get("budgetTopicActionMap")
@@ -864,7 +892,6 @@ async def search_calls(
                                     call_total_meur = total / 1_000_000
                             break
 
-            # Format: prefer call total, show per-project as contribution range
             if call_total_meur and call_total_meur > 0:
                 if min_meur and max_meur and min_meur != max_meur:
                     budget_meur = f"{call_total_meur:.1f}M EUR totali (contributo: {min_meur:.1f}-{max_meur:.1f}M/progetto)"
@@ -881,9 +908,8 @@ async def search_calls(
             else:
                 budget_meur = ""
 
-            # Description: descriptionByte is raw HTML (NOT base64) — use directly
-            import re as _re_desc
             description = ""
+            import re as _re_desc
             desc_byte_raw2 = meta.get("descriptionByte") or []
             desc_byte_str2 = (desc_byte_raw2[0] if isinstance(desc_byte_raw2, list) and desc_byte_raw2 else "").strip()
             if desc_byte_str2:
@@ -897,7 +923,6 @@ async def search_calls(
                         r"Scope[^:]*:(.{50,10000}?)(?:Expected Outcome|Proposals should|$)",
                         _full_text, _re_desc.DOTALL | _re_desc.IGNORECASE
                     )
-                    # Combine Expected Outcome + Scope for maximum content
                     _parts = []
                     if _outcome: _parts.append(_outcome.group(1).strip())
                     if _scope: _parts.append("Scope: " + _scope.group(1).strip())
@@ -914,10 +939,10 @@ async def search_calls(
                     pass
             if not description:
                 description = _strip_html(_euft_extract_description(hit, meta))
+
             prog_division_raw = _euft_extract_programme_division(meta)
             prog_division = PROG_DIVISION_MAP.get(prog_division_raw, prog_division_raw)
 
-            # TRL: extract from full text (descriptionByte already parsed above)
             import re as _re_trl
             trl = ""
             _trl_src = description + " " + " ".join(topic_conditions)
@@ -929,7 +954,6 @@ async def search_calls(
 
             status_val = "open" if STATUS_OPEN in (meta.get("status") or []) else "forthcoming"
 
-            # Compute match_reason: what triggered this result
             _match_parts = []
             _title_lower = str(title).lower()
             _kw_lower = " ".join(k.lower() for k in keywords_list)
@@ -959,9 +983,9 @@ async def search_calls(
             if not _match_parts:
                 _match_parts = ["programme/cluster"]
 
-            match_reason = " + ".join(dict.fromkeys(_match_parts))  # deduplicated, ordered
+            match_reason = " + ".join(dict.fromkeys(_match_parts))
 
-            # Semantic search filter (applied here after description/keywords are extracted)
+            # *** MODIFICA: search_mode AND/OR ***
             if search:
                 _search_tokens = _clean_search(search)
                 _searchable = " ".join([
@@ -970,8 +994,12 @@ async def search_calls(
                     description.lower(),
                     topic_id.lower(),
                 ]).strip()
-                if not all(tok in _searchable for tok in _search_tokens):
-                    continue
+                if search_mode.upper() == "OR":
+                    if not any(tok in _searchable for tok in _search_tokens):
+                        continue
+                else:
+                    if not all(tok in _searchable for tok in _search_tokens):
+                        continue
 
             collected.append({
                 "topic_id":           topic_id,
@@ -1001,26 +1029,38 @@ async def search_calls(
 
         if len(hits) < 50:
             break
-        # If not fetching all, stop once we have enough for current page
         if not fetch_all and len(collected) >= page_number * page_size:
             break
         api_page += 1
 
-    # Auto-retry with relaxed search if 0 results and search was specified
+    # ---- Auto-retry with relaxed search ----
     if len(collected) == 0 and search and _clean_search(search):
         original_search = search
-        retry_searches = []
-        _orig_tokens = _clean_search(search)
-        # Try: first token only
-        if len(_orig_tokens) > 1:
-            retry_searches.append(_orig_tokens[0])
-        # Try: no cluster
-        if cluster:
-            retry_searches.append(search)  # same search, no cluster handled below
-        # Try: synonyms
+
+        # *** MODIFICA: arricchito _syn_map con termini edge/cloud/robotica ***
         _syn_map = {
+            # Edge / Cloud / IPCEI
+            "continuum": "edge",
+            "federated": "continuum",
+            "cloud-native": "cloud",
+            "orchestration": "edge",
+            "fttx": "oran",
+            "telco": "edge",
+            "mec": "computing",
+            "latency": "edge",
+            "on-premises": "cloud",
+            "hyperscaler": "cloud",
+            "sovereign": "cloud",
+            "federation": "federated",
+            "gsma": "telco",
+            # Robotics / Physical AI
+            "humanoid": "robotic",
+            "physical": "embodied",
+            "manipulation": "robotic",
+            "hri": "robotic",
+            "embodied": "autonomous",
+            "gripping": "manipulation",
             # AI / ML
-            "federated": "privacy",
             "privacy": "confidential",
             "confidential": "trustworthy",
             "explainable": "trustworthy",
@@ -1094,6 +1134,13 @@ async def search_calls(
             "photovoltaic": "solar",
             "offshore": "wind",
         }
+
+        retry_searches = []
+        _orig_tokens = _clean_search(search)
+        if len(_orig_tokens) > 1:
+            retry_searches.append(_orig_tokens[0])
+        if cluster:
+            retry_searches.append(search)
         for tok in _orig_tokens:
             if tok in _syn_map:
                 retry_searches.append(_syn_map[tok])
@@ -1102,23 +1149,12 @@ async def search_calls(
             _retry_tokens = _clean_search(retry_search)
             if not _retry_tokens:
                 continue
-            # Try with same cluster first, then without
-            for _retry_cluster in ([cluster_upper, ""] if cluster_upper else [""]):
-                _retry_collected = []
-                for hit in list(seen_ids):
-                    pass  # can't re-use, need full re-scan below
-                break
 
-            # Full retry scan over already-fetched hits is not possible without re-fetching
-            # Instead just update search and re-run (signal via retry_info)
             collected = []
             seen_ids = set()
             api_page = 1
             search = retry_search
-            cluster_upper_retry = "" if cluster else cluster_upper
-            _retry_kw_tokens = _clean_search(retry_search)
 
-            # Re-run the fetch loop with new search
             while api_page <= FETCH_LIMIT:
                 boundary = f"----euft-{_uuid.uuid4().hex}"
                 chunks = []
@@ -1170,11 +1206,13 @@ async def search_calls(
                         continue
                     if deadline_before and deadline and deadline > deadline_before:
                         continue
+
                     def _first(lst, default=""):
                         if isinstance(lst, list) and lst:
                             v = lst[0]; return str(v).strip() if v is not None else default
                         if lst is not None and not isinstance(lst, list): return str(lst).strip()
                         return default
+
                     call_title = _first(meta.get("callTitle"))
                     type_raw = _first(meta.get("typeOfMGAs"))
                     type_of_action = TYPE_OF_ACTION_MAP.get(type_raw, "")
@@ -1285,9 +1323,17 @@ async def search_calls(
                     if _in_kw3: _match_parts2.append("keywords")
                     if _in_desc3: _match_parts2.append("description")
                     if not _match_parts2: _match_parts2 = ["programme/cluster"]
+
+                    # *** MODIFICA: search_mode AND/OR nel retry loop ***
                     _searchable2 = f"{_title_lower2} {_kw_lower2} {_desc_lower2} {_topic_lower2}"
-                    if _s_tokens2 and not all(tok in _searchable2 for tok in _s_tokens2):
-                        continue
+                    if _s_tokens2:
+                        if search_mode.upper() == "OR":
+                            if not any(tok in _searchable2 for tok in _s_tokens2):
+                                continue
+                        else:
+                            if not all(tok in _searchable2 for tok in _s_tokens2):
+                                continue
+
                     collected.append({
                         "topic_id": topic_id, "title": str(title)[:200], "call_id": call_id,
                         "call_title": call_title, "status": status_val2, "deadline": deadline,
@@ -1330,10 +1376,6 @@ async def search_calls(
 async def list_programmes(
     status: str = Query("open", description="open | forthcoming | all"),
 ):
-    """
-    Scopre tutti i programmi EU disponibili in SEDIA con conteggio call.
-    Usa type=1 + status filter, poi raggruppa per prefisso del topic_id (identifier).
-    """
     import uuid as _uuid
     import urllib.parse as _urlparse
     import json as _json
@@ -1375,7 +1417,6 @@ async def list_programmes(
         chunks.append(f"--{boundary}--\r\n".encode())
         body = b"".join(chunks)
 
-        # SEDIA caps at 50 per page regardless of pageSize param
         params = {"pageSize": "50", "pageNumber": str(api_page), "text": "***", "apiKey": "SEDIA"}
         url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
 
@@ -1403,16 +1444,10 @@ async def list_programmes(
 
         if not hits or len(hits) < 50 or len(all_identifiers) >= total:
             break
-        # Safety: max 20 pages (1000 calls)
         if api_page >= 20:
             break
         api_page += 1
 
-    # Raggruppa per prefisso (primo segmento prima del secondo trattino)
-    # es. HORIZON-CL3-... -> HORIZON
-    #     EDF-2026-... -> EDF
-    #     DIGITAL-2026-... -> DIGITAL
-    #     AGRIP-MULTI-... -> AGRIP
     programme_counts = defaultdict(int)
     for tid in all_identifiers:
         parts = tid.split("-")
@@ -1436,9 +1471,6 @@ async def breakdown_by_cluster(
     programme: str = Query("HORIZON", description="Programma: HORIZON, EDF, DIGITAL"),
     status: str = Query("open", description="open | forthcoming | all"),
 ):
-    """
-    Raggruppa le call di un programma per cluster/tema contando i topic_id.
-    """
     import uuid as _uuid
     import urllib.parse as _urlparse
     import json as _json
@@ -1513,41 +1545,31 @@ async def breakdown_by_cluster(
             break
         api_page += 1
 
-    # Group by meaningful segment depending on programme structure
-    # HORIZON-CL3-... → segment[1] = CL3
-    # EDF-2026-DA-AIR-... → segment[2]=DA, segment[3]=AIR → "DA/AIR"
-    # DIGITAL-2026-... → segment[1] = 2026 (not useful), use segment[2]
     cluster_counts = defaultdict(int)
     cluster_topics = defaultdict(list)
 
     for tid in all_topics:
         parts = tid.split("-")
         if prog_upper == "EDF" and len(parts) >= 4:
-            # EDF-2026-DA-AIR → type=DA, domain=AIR
             action_type = parts[2] if len(parts) > 2 else "?"
             domain = parts[3] if len(parts) > 3 else "OTHER"
             cluster = f"{action_type}-{domain}"
         elif prog_upper == "DIGITAL" and len(parts) >= 3:
-            # DIGITAL-2026-BESTUSE or DIGITAL-ECCC-2026
             cluster = parts[1] if parts[1] != "2026" else (parts[2] if len(parts) > 2 else "OTHER")
         else:
-            # Default: second segment
             cluster = parts[1] if len(parts) > 1 else "OTHER"
 
         cluster_counts[cluster] += 1
         if len(cluster_topics[cluster]) < 3:
             cluster_topics[cluster].append(tid)
 
-    # Build result sorted by count
     breakdown = sorted(
         [{"cluster": k, "count": v, "examples": cluster_topics[k]}
          for k, v in cluster_counts.items()],
         key=lambda x: -x["count"]
     )
 
-    # Add human-readable labels
     CLUSTER_LABELS = {
-        # Horizon clusters
         "CL1": "Cluster 1 - Health",
         "CL2": "Cluster 2 - Culture, Creativity & Inclusive Society",
         "CL3": "Cluster 3 - Civil Security for Society",
@@ -1564,9 +1586,6 @@ async def breakdown_by_cluster(
         "EURATOM": "Euratom",
         "HLTH": "Cluster 1 - Health",
         "MISS": "EU Missions",
-        "RAISE": "RAISE - Regional AI Support Ecosystem",
-        "EUROHPC": "EuroHPC Joint Undertaking",
-        # EDF action type + domain
         "DA-AIR": "EDF DA - Air Systems",
         "DA-NAVAL": "EDF DA - Naval Systems",
         "DA-GROUND": "EDF DA - Ground Systems",
@@ -1574,38 +1593,20 @@ async def breakdown_by_cluster(
         "DA-SPACE": "EDF DA - Space",
         "DA-CBRN": "EDF DA - CBRN Protection",
         "DA-SOLDIER": "EDF DA - Soldier Systems",
-        "DA-ENERENV": "EDF DA - Energy & Environment",
+        "DA-PROTMOB": "EDF DA - Protection & Mobility",
         "DA-SENSE": "EDF DA - Sensors & Intelligence",
         "DA-C2": "EDF DA - Command & Control",
-        "DA-ACC": "EDF DA - Accelerated Actions",
-        "DA-DIS": "EDF DA - Disruptive Technologies",
-        "DA-MED": "EDF DA - Medical & CBRN",
-        "DA-EXP": "EDF DA - Explosion & Ammunition",
-        "DA-MATCOMP": "EDF DA - Materials & Components",
-        "DA-PROTMOB": "EDF DA - Protection & Mobility",
-        "DA-SENS": "EDF DA - Sensors & Electronic Warfare",
-        "DA-MED": "EDF DA - Medical & CBRN",
-        "DA-EW": "EDF DA - Electronic Warfare",
-        "RA-MCBRN": "EDF RA - Medical CBRN Research",
         "RA-PROTMOB": "EDF RA - Protection & Mobility Research",
         "RA-SENS": "EDF RA - Sensors Research",
         "RA-SI": "EDF RA - Systems Integration",
         "RA-SIMTRAIN": "EDF RA - Simulation & Training",
         "RA-UWW": "EDF RA - Underwater Warfare",
-        "LS-DIS": "EDF LS - Disruptive Technologies",
         "RA-NAVAL": "EDF RA - Naval Research",
         "RA-GROUND": "EDF RA - Ground Research",
         "RA-CYBER": "EDF RA - Cyber Research",
-        "RA-SPACE": "EDF RA - Space Research",
-        "RA-CBRN": "EDF RA - CBRN Research",
-        "RA-SOLDIER": "EDF RA - Soldier Research",
-        "RA-SENSE": "EDF RA - Sensors Research",
-        "RA-ENERENV": "EDF RA - Energy Research",
-        "RA-DIS": "EDF RA - Disruptive Technologies Research",
+        "LS-DIS": "EDF LS - Disruptive Technologies",
         "LS-DA": "EDF DA-LS - Large Scale Development",
         "LS-RA": "EDF RA-LS - Large Scale Research",
-        "LS-DIS": "EDF LS - Disruptive Technologies",
-        # DIGITAL clusters
         "ECCC": "DIGITAL-ECCC - Cybersecurity Deployment",
         "BESTUSE": "DIGITAL - Best Use of Technology",
         "CLOUD": "DIGITAL - Cloud & Edge",
@@ -1624,180 +1625,10 @@ async def breakdown_by_cluster(
     }
 
 
-@app.get("/debug-types")
-async def debug_types():
-    """Fetch all open calls and return unique typeOfMGAs IDs with examples."""
-    import uuid as _uuid
-    import urllib.parse as _urlparse
-    import json as _json
-    from collections import defaultdict
-
-    query_obj     = {"bool": {"must": [
-        {"terms": {"type": ["1"]}},
-        {"terms": {"status": ["31094502", "31094501"]}},
-    ]}}
-    languages_obj = ["en"]
-    sort_obj      = [{"field": "identifier", "order": "ASC"}]
-
-    type_map = defaultdict(list)
-    api_page = 1
-
-    while api_page <= 20:
-        boundary = f"----euft-{_uuid.uuid4().hex}"
-        chunks = []
-        for fname, (fn, fval, fct) in {
-            "query":     ("blob", _json.dumps(query_obj),     "application/json"),
-            "languages": ("blob", _json.dumps(languages_obj), "application/json"),
-            "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
-        }.items():
-            chunks.append(f"--{boundary}\r\n".encode())
-            chunks.append(f'Content-Disposition: form-data; name="{fname}"; filename="{fn}"\r\nContent-Type: {fct}\r\n\r\n'.encode())
-            chunks.append(fval.encode())
-            chunks.append(b"\r\n")
-        chunks.append(f"--{boundary}--\r\n".encode())
-        body = b"".join(chunks)
-
-        params = {"pageSize": "50", "pageNumber": str(api_page), "text": "***", "apiKey": "SEDIA"}
-        url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
-
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            r = await client.post(url, content=body, headers={
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-                "Accept": "application/json",
-                "Origin": "https://ec.europa.eu",
-            })
-
-        if r.status_code != 200:
-            break
-
-        data = r.json()
-        hits = data.get("results") or []
-        total = data.get("totalResults") or 0
-
-        for hit in hits:
-            meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
-            type_ids = meta.get("typeOfMGAs") or []
-            ident_raw = meta.get("identifier") or []
-            tid = (ident_raw[0] if isinstance(ident_raw, list) and ident_raw else "").strip()
-            title = hit.get("title") or hit.get("summary") or ""
-
-            for t in type_ids:
-                if t and len(type_map[t]) < 3:
-                    type_map[t].append({"topic_id": tid, "title": str(title)[:80]})
-
-        if not hits or len(hits) < 50:
-            break
-        api_page += 1
-
-    # Build result with current mapping status
-    result = []
-    for type_id, examples in sorted(type_map.items()):
-        mapped = TYPE_OF_ACTION_MAP.get(str(type_id), "UNKNOWN")
-        result.append({
-            "type_id": type_id,
-            "mapped_to": mapped,
-            "known": mapped != "UNKNOWN",
-            "examples": examples,
-        })
-
-    unknown = [r for r in result if not r["known"]]
-    known   = [r for r in result if r["known"]]
-
-    return {
-        "total_unique_type_ids": len(result),
-        "unknown_ids": unknown,
-        "known_ids": known,
-    }
-
-
-@app.get("/partner-contacts")
-async def get_partner_contacts(
-    country: str = Query("", description="Filtra per paese: UK, IT, NO, AT"),
-    name: str = Query("", description="Cerca per nome organizzazione (parziale)"),
-):
-    """
-    Restituisce i contatti dei partner dalla Knowledge Base (eu_partner_kb.json).
-    Filtra per paese o nome organizzazione.
-    """
-    import os, json as _json
-
-    kb_path = os.path.join(os.path.dirname(__file__), "eu_partner_kb.json")
-    if not os.path.exists(kb_path):
-        return JSONResponse(status_code=404, content={"error": "KB file not found"})
-
-    with open(kb_path) as f:
-        data = _json.load(f)
-
-    partners = data.get("partners", [])
-    results = []
-
-    for p in partners:
-        identity = p.get("identity", {})
-        p_country = identity.get("country", "")
-        p_name = identity.get("legal_name", "")
-
-        if country and p_country.upper() != country.upper():
-            continue
-        if name and name.lower() not in p_name.lower():
-            continue
-
-        contacts = p.get("contacts", [])
-        competences = p.get("competences", {})
-        relationship = p.get("relationship", {})
-
-        results.append({
-            "legal_name": p_name,
-            "short_name": identity.get("short_name", ""),
-            "country": p_country,
-            "city": identity.get("city", ""),
-            "organization_type": identity.get("organization_type", ""),
-            "website": identity.get("website", ""),
-            "contacts": contacts,
-            "expertise": competences.get("expertise_areas", []),
-            "relationship_status": relationship.get("status", ""),
-            "last_interaction": relationship.get("last_interaction", ""),
-            "notes": relationship.get("notes", ""),
-        })
-
-    return {
-        "total": len(results),
-        "filters": {"country": country, "name": name},
-        "partners": results,
-    }
-
-
-@app.get("/kb-partners")
-async def get_kb_partners(
-    country: str = Query("", description="Filtra per paese: UK, IT, NO, AT"),
-    name: str = Query("", description="Cerca per nome organizzazione (parziale)"),
-):
-    """
-    Trigger per EU Partners: cerca nella KB interna tutti i partner noti
-    ad Adeptic Reply e restituisce profilo completo inclusi contatti.
-    """
-    filters = {}
-    if country:
-        filters["country"] = country
-    if name:
-        filters["name"] = name
-
-    return {
-        "action": "search_kb_partners",
-        "instruction": "Cerca nella Knowledge Base tutti i partner noti ad Adeptic Reply. Per ogni partner restituisci: nome legale, paese, tipo organizzazione, contatti (nome, ruolo, email, LinkedIn, note), expertise, tecnologie, TRL, progetti EU, stato relazione, note relazionali, call preferite e ruoli preferiti.",
-        "search_queries": [
-            "partner organizzazione contatti email",
-            "partner capabilities expertise",
-            "partner relationship status",
-        ],
-        "filters": filters,
-        "note": "La KB è interna all'agente EU Partners. Usa gli strumenti KB disponibili con le query suggerite per recuperare tutti i dati."
-    }
-
-
+@app.get("/debug-description")
 async def debug_description(
     topic_id: str = Query(..., description="Es: HORIZON-CL3-2026-02-CS-ECCC-01"),
 ):
-    """Dump raw descriptionByte to understand encoding format."""
     import uuid as _uuid
     import urllib.parse as _urlparse
     import json as _json
@@ -1864,7 +1695,6 @@ async def debug_description(
         results["raw_hex_start"] = raw[:20].hex()
         results["raw_bytes_start"] = list(raw[:20])
 
-        # Try each decompression
         for method_name, decomp in [
             ("gzip", lambda b: _gzip.decompress(b)),
             ("zlib", lambda b: _zlib.decompress(b)),
@@ -1898,7 +1728,6 @@ async def debug_description(
 async def debug_budget(
     topic_id: str = Query(..., description="Es: HORIZON-CL4-2026-04-DATA-06"),
 ):
-    """Dump raw budgetOverview, typeOfMGAs, actions and all metadata for a topic."""
     import uuid as _uuid
     import urllib.parse as _urlparse
     import json as _json
@@ -1925,9 +1754,7 @@ async def debug_budget(
     body = b"".join(chunks)
 
     params = {"pageSize": "50", "pageNumber": "1", "text": "***", "apiKey": "SEDIA"}
-    url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
 
-    # Search all pages for the topic
     hit = None
     for page in range(1, 20):
         params["pageNumber"] = str(page)
@@ -1957,11 +1784,9 @@ async def debug_budget(
 
     meta = hit.get("metadata", {}) if isinstance(hit.get("metadata"), dict) else {}
 
-    # Parse budgetOverview
     budget_overview_raw = meta.get("budgetOverview")
     budget_overview_parsed = _euft_safe_json(budget_overview_raw) if budget_overview_raw else None
 
-    # Parse actions
     actions_raw = meta.get("actions")
     actions_parsed = _euft_safe_json(actions_raw) if actions_raw else None
 
@@ -1977,283 +1802,6 @@ async def debug_budget(
         "identifier": meta.get("identifier"),
         "callIdentifier": meta.get("callIdentifier"),
         "callTitle": meta.get("callTitle"),
-    }
-
-
-@app.get("/debug-calls")
-async def debug_calls(
-    programme: str = Query("EDF"),
-    status: str = Query("open"),
-):
-    """Debug endpoint: mostra raw SEDIA response per capire struttura calls."""
-    import uuid as _uuid
-    import urllib.parse as _urlparse
-    import json as _json
-
-    STATUS_OPEN        = "31094502"
-    STATUS_FORTHCOMING = "31094501"
-    status_terms = [STATUS_OPEN] if status == "open" else [STATUS_FORTHCOMING] if status == "forthcoming" else [STATUS_OPEN, STATUS_FORTHCOMING]
-
-    # Try 1: with frameworkProgramme filter
-    must_with = [
-        {"terms": {"type": ["1"]}},
-        {"terms": {"status": status_terms}},
-        {"terms": {"frameworkProgramme": [programme.upper()]}},
-    ]
-    # Try 2: without type filter (maybe EDF uses different type)
-    must_no_type = [
-        {"terms": {"status": status_terms}},
-        {"terms": {"frameworkProgramme": [programme.upper()]}},
-    ]
-    # Try 3: just status, no programme filter - see what frameworkProgramme values exist
-    must_bare = [
-        {"terms": {"status": status_terms}},
-    ]
-
-    results = {}
-
-
-    # Try euft DEFAULT_GRANTS_QUERY exactly
-    must_grants = [
-        {"terms": {"type": ["1", "2"]}},
-        {"terms": {"status": ["31094502"]}},
-    ]
-    # Try type=2 only
-    must_type2 = [
-        {"terms": {"type": ["2"]}},
-        {"terms": {"status": ["31094502"]}},
-    ]
-    # Try type=1 only
-    must_type1 = [
-        {"terms": {"type": ["1"]}},
-        {"terms": {"status": ["31094502"]}},
-    ]
-    # Bare - no type filter, show what types exist
-    must_bare = [
-        {"terms": {"status": ["31094502"]}},
-    ]
-    # Try forthcoming (31094501)
-    must_forthcoming = [
-        {"terms": {"type": ["1", "2"]}},
-        {"terms": {"status": ["31094501"]}},
-    ]
-
-    for label, must in [
-        ("grants_type_1_2", must_grants),
-        ("type_2_only", must_type2),
-        ("type_1_only", must_type1),
-        ("forthcoming_type_1_2", must_forthcoming),
-        ("bare_all_types", must_bare),
-    ]:
-        query_obj = {"bool": {"must": must}}
-        languages_obj = ["en"]
-        sort_obj = [{"field": "identifier", "order": "ASC"}]
-
-        boundary = f"----euft-{_uuid.uuid4().hex}"
-        chunks = []
-        for field_name, (filename, payload_str, ct) in {
-            "query":     ("blob", _json.dumps(query_obj),     "application/json"),
-            "languages": ("blob", _json.dumps(languages_obj), "application/json"),
-            "sort":      ("blob", _json.dumps(sort_obj),      "application/json"),
-        }.items():
-            chunks.append(f"--{boundary}\r\n".encode())
-            chunks.append(f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\nContent-Type: {ct}\r\n\r\n'.encode())
-            chunks.append(payload_str.encode())
-            chunks.append(b"\r\n")
-        chunks.append(f"--{boundary}--\r\n".encode())
-        body = b"".join(chunks)
-
-        params = {"pageSize": "3", "pageNumber": "1", "text": "***", "apiKey": "SEDIA"}
-        url = "https://api.tech.ec.europa.eu/search-api/prod/rest/search?" + _urlparse.urlencode(params)
-
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            r = await client.post(url, content=body, headers={
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-                "Accept": "application/json",
-                "Origin": "https://ec.europa.eu",
-            })
-
-        if r.status_code == 200:
-            data = r.json()
-            total = data.get("totalResults", 0)
-            hits = data.get("results") or []
-            sample = []
-            for h in hits[:2]:
-                meta = h.get("metadata", {}) if isinstance(h.get("metadata"), dict) else {}
-                sample.append({
-                    "reference": h.get("reference"),
-                    "title": h.get("content", "")[:80],
-                    "summary": h.get("summary", "")[:80],
-                    "frameworkProgramme": meta.get("frameworkProgramme"),
-                    "frameworkProgrammeLabel": meta.get("frameworkProgrammeLabel") or meta.get("programmeName"),
-                    "type": meta.get("type"),
-                    "status": meta.get("status"),
-                    "identifier": meta.get("identifier"),
-                    "callIdentifier": meta.get("callIdentifier"),
-                    "topicIdentifier": meta.get("topicIdentifier"),
-                    "deadlineDate": meta.get("deadlineDate"),
-                    "openingDate": meta.get("openingDate"),
-                    "ALL_META_KEYS": list(meta.keys())[:30],
-                })
-            results[label] = {"total": total, "sample": sample}
-        else:
-            results[label] = {"error": r.status_code, "text": r.text[:200]}
-
-    return results
-
-
-@app.get("/announcements")
-async def get_announcements_with_descriptions(
-    topic_id: str = Query(..., description="Es: HORIZON-CL4-2026-04-DATA-06"),
-):
-    """
-    Tenta di recuperare le descrizioni reali degli annunci partner
-    (quelle visibili nel portale) tramite endpoint FT-Announcements.
-    
-    Step 1: cerca il ccm2Id numerico del topic su SEDIA
-    Step 2: chiama FT-Announcements con ccm2Id
-    Step 3: se fallisce, ritorna i dati SEDIA_PERSON con nota
-    """
-    import json as _json
-
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://ec.europa.eu",
-        "Referer": "https://ec.europa.eu/",
-    }
-
-    async with httpx.AsyncClient(timeout=20.0) as client:
-
-        # Step 1: trova ccm2Id cercando il topic su SEDIA (apiKey=SEDIA)
-        ccm2id = None
-        try:
-            r_topic = await client.post(
-                SEDIA_URL,
-                params={"apiKey": "SEDIA", "text": f'"{topic_id}"', "pageSize": 5, "pageNumber": 1},
-                json={},
-                headers=headers,
-            )
-            topic_hits = r_topic.json().get("results") or []
-            for hit in topic_hits:
-                meta = hit.get("metadata", {})
-                # Cerca il ccm2Id nei metadati
-                for key in ["ccm2Id", "id", "topicId", "identifier"]:
-                    val = meta.get(key, [])
-                    if val:
-                        candidate = val[0] if isinstance(val, list) else val
-                        if str(candidate).isdigit():
-                            ccm2id = candidate
-                            break
-                # Alternativa: il reference del hit potrebbe essere il ccm2Id
-                ref = hit.get("reference", "")
-                if ref and str(ref).isdigit():
-                    ccm2id = ref
-                    break
-                if ccm2id:
-                    break
-        except Exception as e:
-            pass
-
-        # Step 2: chiama FT-Announcements con ccm2Id
-        ft_data = None
-        all_attempts = []
-        if ccm2id:
-            attempts = [
-                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"ccm2Id": ccm2id}, {}),
-                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"topicId": ccm2id}, {}),
-                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"id": ccm2id}, {}),
-                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"ccm2Id": topic_id}, {}),
-                ("GET",  f"https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements/{ccm2id}", {}, {}),
-                # Try POST with body (SPA uses POST for many SEDIA endpoints)
-                ("POST", "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {}, {"ccm2Id": ccm2id}),
-                ("POST", "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {}, {"topicId": ccm2id}),
-                # Try with apiKey param
-                ("GET",  "https://api.sedia-backoffice-production.eu/public/ehelp/module/FT-Announcements", {"apiKey": "SEDIA", "ccm2Id": ccm2id}, {}),
-            ]
-            for method, url, params, body in attempts:
-                attempt_result = {"method": method, "url": url, "params": params}
-                try:
-                    if method == "POST":
-                        r_ft = await client.post(url, params=params, json=body, headers=headers)
-                    else:
-                        r_ft = await client.get(url, params=params, headers=headers)
-                    attempt_result["status"] = r_ft.status_code
-                    attempt_result["response"] = r_ft.text[:400]
-                    if r_ft.status_code == 200:
-                        try:
-                            ft_data = r_ft.json()
-                            ft_data["_winning_attempt"] = attempt_result
-                            all_attempts.append(attempt_result)
-                            break
-                        except Exception:
-                            attempt_result["parse_error"] = "not JSON"
-                except Exception as e:
-                    attempt_result["exception"] = str(e)[:200]
-                all_attempts.append(attempt_result)
-
-        # Step 3: chiama SEDIA_PERSON per la lista partner (come /partners)
-        exact_query = f'"{topic_id}"'
-        seen_pics = set()
-        partners = []
-        page = 1
-
-        while True:
-            r = await client.post(
-                SEDIA_URL,
-                params={"apiKey": "SEDIA_PERSON", "text": exact_query, "pageSize": 50, "pageNumber": page},
-                json={},
-                headers=headers,
-            )
-            if r.status_code != 200:
-                break
-
-            data = r.json()
-            hits = data.get("results") or []
-            total = data.get("totalResults") or 0
-
-            if not hits:
-                break
-
-            for hit in hits:
-                meta = hit.get("metadata", {})
-                topics_field = meta.get("topics") or []
-                if topic_id not in topics_field:
-                    continue
-                pic = (meta.get("pic") or [""])[0]
-                dedup_key = pic if pic else (meta.get("name") or [""])[0]
-                if dedup_key in seen_pics:
-                    continue
-                seen_pics.add(dedup_key)
-
-                country_id = (meta.get("country") or [""])[0]
-                org_type_raw = (meta.get("organisationType") or [""])[0]
-                keywords = meta.get("keywords", [])
-
-                partners.append({
-                    "legal_name":        (meta.get("name") or [""])[0] or hit.get("summary", ""),
-                    "pic_number":        pic,
-                    "country":           COUNTRY_MAP.get(country_id, country_id),
-                    "organization_type": ORG_TYPE_MAP.get(org_type_raw, org_type_raw),
-                    "sedia_keywords":    keywords[:10],
-                    "all_active_calls":  len(meta.get("topics", [])),
-                    "projects_count":    (meta.get("noOfProjects") or [""])[0],
-                    "portal_url":        f"https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/org-details/{pic}" if pic else "",
-                    # Placeholder per description da FT-Announcements
-                    "announcement_description": "",
-                })
-
-            if page * 50 >= total or len(hits) < 50:
-                break
-            page += 1
-
-    return {
-        "topic_id":      topic_id,
-        "ccm2id_found":  ccm2id,
-        "ft_raw":        ft_data,
-        "total_partners": len(partners),
-        "partners":      partners,
-        "ft_attempts": all_attempts,
-        "note": "Vedere ft_attempts per capire quale endpoint funziona",
     }
 
 
@@ -2284,4 +1832,80 @@ async def debug_raw(topic_id: str = Query(...), page_size: int = Query(5)):
             }
             for h in hits
         ],
+    }
+
+
+@app.get("/partner-contacts")
+async def get_partner_contacts(
+    country: str = Query("", description="Filtra per paese: UK, IT, NO, AT"),
+    name: str = Query("", description="Cerca per nome organizzazione (parziale)"),
+):
+    import os, json as _json
+
+    kb_path = os.path.join(os.path.dirname(__file__), "eu_partner_kb.json")
+    if not os.path.exists(kb_path):
+        return JSONResponse(status_code=404, content={"error": "KB file not found"})
+
+    with open(kb_path) as f:
+        data = _json.load(f)
+
+    partners = data.get("partners", [])
+    results = []
+
+    for p in partners:
+        identity = p.get("identity", {})
+        p_country = identity.get("country", "")
+        p_name = identity.get("legal_name", "")
+
+        if country and p_country.upper() != country.upper():
+            continue
+        if name and name.lower() not in p_name.lower():
+            continue
+
+        contacts = p.get("contacts", [])
+        competences = p.get("competences", {})
+        relationship = p.get("relationship", {})
+
+        results.append({
+            "legal_name": p_name,
+            "short_name": identity.get("short_name", ""),
+            "country": p_country,
+            "city": identity.get("city", ""),
+            "organization_type": identity.get("organization_type", ""),
+            "website": identity.get("website", ""),
+            "contacts": contacts,
+            "expertise": competences.get("expertise_areas", []),
+            "relationship_status": relationship.get("status", ""),
+            "last_interaction": relationship.get("last_interaction", ""),
+            "notes": relationship.get("notes", ""),
+        })
+
+    return {
+        "total": len(results),
+        "filters": {"country": country, "name": name},
+        "partners": results,
+    }
+
+
+@app.get("/kb-partners")
+async def get_kb_partners(
+    country: str = Query("", description="Filtra per paese: UK, IT, NO, AT"),
+    name: str = Query("", description="Cerca per nome organizzazione (parziale)"),
+):
+    filters = {}
+    if country:
+        filters["country"] = country
+    if name:
+        filters["name"] = name
+
+    return {
+        "action": "search_kb_partners",
+        "instruction": "Cerca nella Knowledge Base tutti i partner noti ad Adeptic Reply. Per ogni partner restituisci: nome legale, paese, tipo organizzazione, contatti (nome, ruolo, email, LinkedIn, note), expertise, tecnologie, TRL, progetti EU, stato relazione, note relazionali, call preferite e ruoli preferiti.",
+        "search_queries": [
+            "partner organizzazione contatti email",
+            "partner capabilities expertise",
+            "partner relationship status",
+        ],
+        "filters": filters,
+        "note": "La KB è interna all'agente EU Partners. Usa gli strumenti KB disponibili con le query suggerite per recuperare tutti i dati."
     }
